@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.3.1 (2026-05-10)</small>
+
+* fix(ui): ensure sync animation is rendered by ticking progress bars ([9aedea8](https://github.com/michaelasper/kt/commit/9aedea8))
+
 ## 0.3.0 (2026-05-10)
 
 * feat(ui): overhaul sync UI with in-place updates and matrix rain ([48bfc9e](https://github.com/michaelasper/kt/commit/48bfc9e))
