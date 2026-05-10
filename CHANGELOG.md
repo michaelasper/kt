@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.0 (2026-05-10)
+
+* feat: cyberpunk data shredder sync UI with hex rain animation ([890ab56](https://github.com/michaelasper/kt/commit/890ab56))
+
 ## <small>0.1.9 (2026-05-10)</small>
 
 * fix: extract binary from tar.gz before self-replace in upgrade ([ed6e6f1](https://github.com/michaelasper/kt/commit/ed6e6f1))
