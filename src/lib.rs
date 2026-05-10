@@ -3,9 +3,12 @@ pub mod discovery;
 pub mod embedding;
 pub mod error;
 pub mod git;
+pub mod global_config;
 pub mod indexing;
 pub mod mcp;
+pub mod mcp_setup;
 pub mod storage;
+pub mod upgrade;
 
 pub use config::Config;
 pub use error::KtError;

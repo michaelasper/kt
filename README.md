@@ -126,15 +126,81 @@ kt serve
 
 The server reads `KT_REDIS_URL` (default `redis://localhost:6379`) and exposes MCP tools for search and retrieval.
 
-### Rebuild a repository index
+### Index a repository
 
 ```bash
 kt sync /path/to/repo
 ```
 
+### Upgrade kt
+
+```bash
+kt upgrade
+```
+
+Upgrade kt to the latest version from GitHub releases. Use `--force` to re-install even if already up-to-date, or `--version <version>` to install a specific version.
+
+### Configure MCP harnesses
+
+```bash
+kt mcp setup
+```
+
+Interactively configure kt for detected MCP harnesses (OpenCode, Claude Desktop, Cline, Continue, Oh My Pi).
+
+```bash
+kt mcp setup --global
+```
+
+Configure kt with global settings that apply across all repositories.
+
+```bash
+kt mcp setup --create-agents
+```
+
+Create an `AGENTS.md` file in the current directory with kt usage instructions for AI assistants.
+
+```bash
+kt mcp list
+```
+
+List detected MCP harnesses and their configuration status.
+
+```bash
+kt mcp show
+```
+
+Display the current global kt configuration.
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `kt serve` | Start the MCP server (stdio transport) |
+| `kt sync <dir>` | Index a directory into the knowledge base |
+| `kt upgrade` | Upgrade kt to the latest version |
+| `kt mcp setup` | Configure kt for MCP harnesses (interactive) |
+| `kt mcp setup --global` | Configure with global settings |
+| `kt mcp setup --create-agents` | Create AGENTS.md in current directory |
+| `kt mcp list` | List detected MCP harnesses |
+| `kt mcp show` | Show global configuration |
+| `kt --help` | Show help information |
+
 ### MCP Setup
 
-Configure your MCP client to run `kt serve` and pass the Redis environment.
+**Recommended:** Use the built-in setup command to automatically configure kt for your AI harness:
+
+```bash
+kt mcp setup
+```
+
+This will:
+- Detect installed MCP harnesses (OpenCode, Claude Desktop, Cline, Continue, Oh My Pi)
+- Auto-detect Redis instance (with 5-second timeout)
+- Configure each harness with the appropriate settings
+- Create global configuration for consistent settings across repos
+
+**Manual Configuration:** If you prefer manual configuration, add this to your MCP client config:
 
 ```json
 {
@@ -149,6 +215,13 @@ Configure your MCP client to run `kt serve` and pass the Redis environment.
   }
 }
 ```
+
+**Supported Harnesses:**
+- **OpenCode**: `~/.config/opencode/mcp.json`
+- **Claude Desktop**: `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
+- **Cline**: `~/.vscode/settings.json`
+- **Continue**: `~/.vscode/settings.json`
+- **Oh My Pi**: `~/.omp/agent/mcp.json`
 
 ### Branch-safe indexing workflow
 
@@ -199,6 +272,73 @@ Used as an MCP tool, this indexes changed files into an ephemeral shadow index (
 
 - `KT_REDIS_URL` — Redis endpoint (default `redis://localhost:6379`)
 - `KT_MODEL_CACHE_DIR` — Cache directory for local ONNX model files
+
+### Upgrading
+
+Keep kt up-to-date with the latest features and bug fixes:
+
+```bash
+kt upgrade
+```
+
+The upgrade command:
+- Checks GitHub releases for newer versions
+- Downloads the appropriate binary for your platform
+- Safely replaces the current binary
+- Supports force re-install with `--force`
+- Supports installing specific versions with `--version <version>`
+
+### Nightly Builds
+
+For early access to new features, try the nightly builds:
+
+```bash
+curl -L https://github.com/michaelasper/kt/releases/download/nightly/kt-darwin-amd64-nightly-<date>.tar.gz | tar xz
+sudo mv kt /usr/local/bin/
+```
+
+⚠️ **Warning:** Nightly builds may contain unstable features and bugs. Use at your own risk!
+
+## Development
+
+### Building from Source
+
+```bash
+git clone https://github.com/michaelasper/kt.git
+cd kt
+cargo build --release
+```
+
+### Testing
+
+```bash
+cargo test              # unit tests
+cargo test --test adversarial  # integration tests (requires Redis)
+cargo clippy --all-targets --all-features
+cargo fmt --all -- --check
+```
+
+### CI/CD
+
+This project uses GitHub Actions for continuous integration and automated releases:
+
+- **CI**: Runs tests, linting, and builds on every push and pull request
+- **Semantic Releases**: Automatic versioning and release creation based on conventional commits
+- **Nightly Builds**: Daily automated builds from the main branch
+
+**Conventional Commits:**
+
+Use conventional commit messages to trigger automatic releases:
+
+- `feat:` - New features (triggers minor version bump)
+- `fix:` - Bug fixes (triggers patch version bump)
+- `chore:`, `docs:`, `style:`, `refactor:`, `perf:`, `test:`, `build:`, `ci:` - Other changes (no version bump)
+
+Example:
+```bash
+git commit -m "feat: add automatic Redis detection"
+git commit -m "fix: resolve issue with chunk deduplication"
+```
 
 ## Contributing
 

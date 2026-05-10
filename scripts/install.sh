@@ -107,7 +107,57 @@ fi
 
 echo "Installed kt -> ${INSTALL_DIR}/kt"
 echo
-echo "Next:"
-echo "  ${installed_via_path} --help"
+
+# Colorful welcome message
+if command -v tput >/dev/null 2>&1; then
+    BOLD=$(tput bold)
+    GREEN=$(tput setaf 2)
+    YELLOW=$(tput setaf 3)
+    BLUE=$(tput setaf 4)
+    CYAN=$(tput setaf 6)
+    RESET=$(tput sgr0)
+else
+    BOLD=""
+    GREEN=""
+    YELLOW=""
+    BLUE=""
+    CYAN=""
+    RESET=""
+fi
+
+echo "${BOLD}${CYAN}╔════════════════════════════════════════════════════════════╗${RESET}"
+echo "${BOLD}${CYAN}║                                                          ║${RESET}"
+echo "${CYAN}║${RESET} ${BOLD}${GREEN}✨  kt Installed Successfully!  ✨${RESET} ${CYAN}║${RESET}"
+echo "${CYAN}║                                                          ║${RESET}"
+echo "${BOLD}${CYAN}╚════════════════════════════════════════════════════════════╝${RESET}"
 echo
-echo "Note: ensure ${INSTALL_DIR} is on your PATH"
+
+echo "${BOLD}${YELLOW}🚀 Quick Start:${RESET}"
+echo
+echo "  1. ${CYAN}Start Redis:${RESET}"
+echo "     ${BLUE}docker compose up -d${RESET}"
+echo
+echo "  2. ${CYAN}Index your codebase:${RESET}"
+echo "     ${BLUE}kt sync .${RESET}"
+echo
+echo "  3. ${CYAN}Configure MCP (optional but recommended):${RESET}"
+echo "     ${BLUE}kt mcp setup${RESET}"
+echo
+
+echo "${BOLD}${YELLOW}💡 Pro Tips:${RESET}"
+echo
+echo "  • ${GREEN}Use global config for consistent settings across repos${RESET}"
+echo "    ${BLUE}kt mcp setup --global${RESET}"
+echo
+echo "  • ${GREEN}Auto-detect Redis and harnesses for quick setup${RESET}"
+echo
+echo "  • ${GREEN}Create AGENTS.md in your repo for AI assistant context${RESET}"
+echo "    ${BLUE}kt mcp setup --create-agents${RESET}"
+echo
+
+echo "${BOLD}${YELLOW}📚 Learn More:${RESET}"
+echo "  • Documentation: ${BLUE}https://github.com/michaelasper/kt${RESET}"
+echo "  • Run: ${BLUE}kt --help${RESET}"
+echo
+
+echo "${GREEN}✓${RESET} Installation complete! Note: ensure ${YELLOW}${INSTALL_DIR}${RESET} is on your PATH"
