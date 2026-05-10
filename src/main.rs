@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use kt::global_config::GlobalConfigManager;
 use kt::mcp_setup::HarnessType;
 use kt::upgrade::Upgrader;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -97,12 +98,16 @@ async fn run_sync(
     directory: &std::path::Path,
     full: bool,
 ) -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
-        .init();
+    let is_tty = std::io::stdout().is_terminal();
+
+    let default_level = if is_tty { "kt=warn" } else { "kt=info" };
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::default()
+            .add_directive(default_level.parse().unwrap())
+            .add_directive("ort=warn".parse().unwrap())
+    });
+
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     if !directory.exists() {
         anyhow::bail!("Directory not found: {}", directory.display());
@@ -208,14 +213,18 @@ async fn run_sync(
         return Ok(());
     }
 
+    let mut ui = kt::sync_ui::SyncUI::new(files.len());
+
     let mut total_chunks = 0usize;
     let mut total_files = 0usize;
 
-    for file in &files {
+    for (i, file) in files.iter().enumerate() {
         let chunks = kt::indexing::parse_file(&file.path, &file.relative_path, file.language);
         if chunks.is_empty() {
             continue;
         }
+
+        ui.start_file(&file.relative_path, i);
 
         if let Err(e) = storage.remove_file_chunks(&file.relative_path).await {
             tracing::warn!("Failed to clean old chunks for {}: {e}", file.relative_path);
@@ -232,7 +241,8 @@ async fn run_sync(
             .await?;
         total_chunks += chunks.len();
         total_files += 1;
-        tracing::info!("Indexed {} ({} chunks)", file.relative_path, chunks.len());
+
+        ui.finish_file(&file.relative_path, chunks.len());
     }
 
     let dir_str = directory
@@ -251,11 +261,7 @@ async fn run_sync(
         tracing::debug!("Cleared sync state after full sync");
     }
 
-    tracing::info!(
-        "Sync complete: {} files, {} chunks indexed",
-        total_files,
-        total_chunks
-    );
+    ui.finish(total_files, total_chunks);
 
     Ok(())
 }
