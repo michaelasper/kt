@@ -14,15 +14,12 @@ permissions:
   contents: write
 
 jobs:
-  semantic-release:
-    name: Semantic Release
+  release:
+    name: Release
     runs-on: ubuntu-latest
     outputs:
       release_published: ${{ steps.semantic.outputs.release_published }}
       new_release_version: ${{ steps.semantic.outputs.new_release_version }}
-      new_release_major: ${{ steps.semantic.outputs.new_release_major }}
-      new_release_minor: ${{ steps.semantic.outputs.new_release_minor }}
-      new_release_patch: ${{ steps.semantic.outputs.new_release_patch }}
 
     steps:
       - name: Checkout
@@ -35,6 +32,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
 
       - name: Install semantic-release dependencies
         run: |
@@ -68,29 +70,37 @@ jobs:
             version=$(grep -oP 'The next release version is \K[0-9.]+' /tmp/sr-output.log)
             echo "release_published=true" >> "$GITHUB_OUTPUT"
             echo "new_release_version=$version" >> "$GITHUB_OUTPUT"
-            echo "new_release_major=$(echo "$version" | cut -d. -f1)" >> "$GITHUB_OUTPUT"
-            echo "new_release_minor=$(echo "$version" | cut -d. -f2)" >> "$GITHUB_OUTPUT"
-            echo "new_release_patch=$(echo "$version" | cut -d. -f3)" >> "$GITHUB_OUTPUT"
             echo "Release published: v$version"
           else
             echo "release_published=false" >> "$GITHUB_OUTPUT"
             echo "No release published"
           fi
 
-  build-release:
-    name: Build Release
-    needs: semantic-release
-    if: needs.semantic-release.outputs.release_published == 'true'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: kt-linux-amd64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact_name: kt-darwin-arm64
+      - name: Build Linux binary
+        if: steps.semantic.outputs.release_published == 'true'
+        run: |
+          version="${{ steps.semantic.outputs.new_release_version }}"
+          sed -i "s/^version = \".*\"/version = \"$version\"/" Cargo.toml
+          cargo build --release --target x86_64-unknown-linux-gnu
+          cd target/x86_64-unknown-linux-gnu/release
+          tar czf ../../../kt-linux-amd64.tar.gz kt
+          cd -
+
+      - name: Upload release assets
+        if: steps.semantic.outputs.release_published == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: kt-linux-amd64.tar.gz
+          tag_name: v${{ steps.semantic.outputs.new_release_version }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-macos:
+    name: Build macOS
+    needs: release
+    if: needs.release.outputs.release_published == 'true'
+    runs-on: macos-latest
 
     steps:
       - name: Checkout code
@@ -99,29 +109,27 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin
 
-      - name: Install OpenSSL (macOS)
-        if: runner.os == 'macOS'
+      - name: Install OpenSSL
         run: |
           brew install openssl
           echo "OPENSSL_DIR=$(brew --prefix openssl)" >> "$GITHUB_ENV"
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Package binary
-        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.release.outputs.new_release_version }}
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.artifact_name }}.tar.gz kt
+          sed -i '' "s/^version = \".*\"/version = \"$RELEASE_VERSION\"/" Cargo.toml
+          cargo build --release --target aarch64-apple-darwin
+          cd target/aarch64-apple-darwin/release
+          tar czf ../../../kt-darwin-arm64.tar.gz kt
           cd -
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.artifact_name }}.tar.gz
-          tag_name: v${{ needs.semantic-release.outputs.new_release_version }}
-          generate_release_notes: true
+          files: kt-darwin-arm64.tar.gz
+          tag_name: v${{ needs.release.outputs.new_release_version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

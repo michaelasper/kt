@@ -211,13 +211,7 @@ impl Upgrader {
                 .green()
                 .bold()
         );
-        println!();
-        println!("{}", style("Next steps:").yellow());
-        println!(
-            "  1. Restart your terminal or run: {}",
-            style("exec $SHELL").cyan()
-        );
-        println!("  2. Verify the upgrade: {}", style("kt --version").cyan());
+        println!("  Verify: {}", style("kt --version").cyan());
         println!();
 
         Ok(())
