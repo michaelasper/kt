@@ -58,7 +58,20 @@ jobs:
         run: |
           npx semantic-release \
             --branches main \
-            --preset conventionalcommits
+            --preset conventionalcommits 2>&1 | tee /tmp/sr-output.log || true
+
+          if rg -q "Published release" /tmp/sr-output.log; then
+            version=$(rg -oP 'The next release version is \K[0-9.]+' /tmp/sr-output.log || rg -oP 'Published release \K[0-9.]+' /tmp/sr-output.log)
+            echo "release_published=true" >> "$GITHUB_OUTPUT"
+            echo "new_release_version=$version" >> "$GITHUB_OUTPUT"
+            echo "new_release_major=$(echo "$version" | cut -d. -f1)" >> "$GITHUB_OUTPUT"
+            echo "new_release_minor=$(echo "$version" | cut -d. -f2)" >> "$GITHUB_OUTPUT"
+            echo "new_release_patch=$(echo "$version" | cut -d. -f3)" >> "$GITHUB_OUTPUT"
+            echo "Release published: v$version"
+          else
+            echo "release_published=false" >> "$GITHUB_OUTPUT"
+            echo "No release published"
+          fi
 
   build-release:
     name: Build Release
@@ -72,9 +85,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact_name: kt-linux-amd64
           - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: kt-darwin-amd64
-          - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: kt-darwin-arm64
 
@@ -86,6 +96,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Install OpenSSL (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install openssl
+          echo "OPENSSL_DIR=$(brew --prefix openssl)" >> "$GITHUB_ENV"
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
