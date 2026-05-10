@@ -82,12 +82,16 @@ pub fn get_git_info(directory: &Path) -> Result<GitInfo, GitError> {
     })
 }
 
-pub fn get_diff_files(directory: &Path, base_branch: &str) -> Result<Vec<String>, GitError> {
+pub fn get_diff_files(directory: &Path, base_ref: &str) -> Result<Vec<String>, GitError> {
     let repo = Repository::discover(directory)
         .map_err(|_| GitError::NotARepository(directory.display().to_string()))?;
 
-    let base = repo.find_branch(base_branch, git2::BranchType::Local)?;
-    let base_oid = base.get().target().ok_or(GitError::DetachedHead)?;
+    let base_oid = if let Ok(oid) = git2::Oid::from_str(base_ref) {
+        oid
+    } else {
+        let base = repo.find_branch(base_ref, git2::BranchType::Local)?;
+        base.get().target().ok_or(GitError::DetachedHead)?
+    };
 
     let head_oid = repo.head()?.target().ok_or(GitError::DetachedHead)?;
     let base_commit = repo.find_commit(base_oid)?;
@@ -229,6 +233,21 @@ mod tests {
 
             let changed = get_diff_files(repo_path, "main").unwrap();
             assert_eq!(changed, vec!["feature.rs".to_string()]);
+        });
+    }
+
+    #[test]
+    fn test_get_diff_files_with_commit_sha() {
+        with_temp_repo(|repo| {
+            let repo_path = repo.workdir().unwrap();
+            commit_file(repo, "base.rs", "pub fn base() {}\n", "base");
+
+            let base_sha = repo.head().unwrap().target().unwrap().to_string();
+
+            commit_file(repo, "new.rs", "pub fn new() {}\n", "new commit");
+
+            let changed = get_diff_files(repo_path, &base_sha).unwrap();
+            assert_eq!(changed, vec!["new.rs".to_string()]);
         });
     }
 }

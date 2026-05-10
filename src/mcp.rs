@@ -421,10 +421,10 @@ impl KtServer {
         let storage = self.inner.storage.read().await;
         storage.ensure_shadow_index().await.map_err(mcp_error)?;
 
-        let base_branch = params.base_branch.as_deref().unwrap_or("main");
+        let base_ref = params.base_branch.as_deref().unwrap_or("main");
         let ttl_seconds = params.ttl_seconds.unwrap_or(7200);
 
-        let changed_files = git::get_diff_files(root, base_branch).map_err(mcp_error)?;
+        let changed_files = git::get_diff_files(root, base_ref).map_err(mcp_error)?;
 
         if changed_files.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
