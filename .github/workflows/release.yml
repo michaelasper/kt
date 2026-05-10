@@ -43,7 +43,8 @@ jobs:
             @semantic-release/release-notes-generator@14 \
             @semantic-release/changelog@6 \
             @semantic-release/git@10 \
-            @semantic-release/github@11
+            @semantic-release/github@11 \
+            conventional-changelog-conventionalcommits@7
 
       - name: Run semantic-release
         id: semantic
