@@ -252,7 +252,7 @@ impl Upgrader {
     fn find_suitable_asset<'a>(&self, assets: &'a [GitHubAsset]) -> Result<&'a GitHubAsset> {
         let (os, arch) = self.detect_platform();
 
-        let pattern = format!("kt-{}-{}-{}", os, arch, std::env::consts::EXE_SUFFIX);
+        let pattern = format!("kt-{}-{}", os, arch);
 
         debug!("Looking for asset matching: {}", pattern);
 

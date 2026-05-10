@@ -144,33 +144,41 @@ async fn run_sync(config: &kt::config::Config, directory: &std::path::Path, full
                             &current_commit[..8]
                         );
 
-                        let changed_paths = kt::git::get_diff_files(directory, &last)?;
-
-                        for path in &changed_paths {
-                            if !directory.join(path).exists() {
-                                tracing::info!("Removing deleted file from index: {}", path);
-                                if let Err(e) = storage.remove_file_chunks(path).await {
-                                    tracing::warn!("Failed to remove chunks for deleted file {}: {e}", path);
+                        match kt::git::get_diff_files(directory, &last) {
+                            Ok(changed_paths) => {
+                                for path in &changed_paths {
+                                    if !directory.join(path).exists() {
+                                        tracing::info!("Removing deleted file from index: {}", path);
+                                        if let Err(e) = storage.remove_file_chunks(path).await {
+                                            tracing::warn!("Failed to remove chunks for deleted file {}: {e}", path);
+                                        }
+                                    }
                                 }
+
+                                let changed_set: std::collections::HashSet<_> =
+                                    changed_paths.into_iter().collect();
+
+                                let all_files = kt::discovery::discover_files(directory);
+                                let changed_files: Vec<_> = all_files
+                                    .into_iter()
+                                    .filter(|f| changed_set.contains(&f.relative_path))
+                                    .collect();
+
+                                if changed_files.is_empty() {
+                                    tracing::info!("No supported files in changed set");
+                                    return Ok(());
+                                }
+
+                                tracing::info!("Found {} changed files to index", changed_files.len());
+                                changed_files
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to compute diff ({e}), falling back to full sync"
+                                );
+                                kt::discovery::discover_files(directory)
                             }
                         }
-
-                        let changed_set: std::collections::HashSet<_> =
-                            changed_paths.into_iter().collect();
-
-                        let all_files = kt::discovery::discover_files(directory);
-                        let changed_files: Vec<_> = all_files
-                            .into_iter()
-                            .filter(|f| changed_set.contains(&f.relative_path))
-                            .collect();
-
-                        if changed_files.is_empty() {
-                            tracing::info!("No supported files in changed set");
-                            return Ok(());
-                        }
-
-                        tracing::info!("Found {} changed files to index", changed_files.len());
-                        changed_files
                     }
                 }
             }
