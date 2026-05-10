@@ -828,7 +828,8 @@ fn parse_search_results(value: redis::Value) -> anyhow::Result<Vec<SearchResult>
 
 fn is_index_not_found_error(err: &redis::RedisError) -> bool {
     let msg = err.to_string().to_lowercase();
-    msg.contains("unknown index") || msg.contains("index name") && msg.contains("unknown")
+    msg.contains("unknown index")
+        || (msg.contains("index name") && (msg.contains("unknown") || msg.contains("not found")))
 }
 
 fn parse_language(s: &str) -> Language {
@@ -895,4 +896,27 @@ fn extract_doc_keys(value: &redis::Value) -> Vec<String> {
     }
 
     keys
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_index_not_found_error;
+    use redis::RedisError;
+
+    #[test]
+    fn index_not_found_error_matches_common_variants() {
+        let err1 = RedisError::from((redis::ErrorKind::ResponseError, "Unknown: index name"));
+        let err2 = RedisError::from((redis::ErrorKind::ResponseError, "Unknown Index name"));
+        let err3 = RedisError::from((redis::ErrorKind::ResponseError, "index name not found"));
+
+        assert!(is_index_not_found_error(&err1));
+        assert!(is_index_not_found_error(&err2));
+        assert!(is_index_not_found_error(&err3));
+    }
+
+    #[test]
+    fn index_not_found_error_rejects_other_messages() {
+        let err = RedisError::from((redis::ErrorKind::ResponseError, "syntax error"));
+        assert!(!is_index_not_found_error(&err));
+    }
 }
