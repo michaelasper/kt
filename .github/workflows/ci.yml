@@ -83,15 +83,9 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact_name: kt-linux-amd64
-            asset_name: kt-x86_64-unknown-linux-gnu
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: kt-darwin-amd64
-            asset_name: kt-x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: kt-darwin-arm64
-            asset_name: kt-aarch64-apple-darwin
 
     steps:
       - name: Checkout code
