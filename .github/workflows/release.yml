@@ -56,12 +56,16 @@ jobs:
           GIT_COMMITTER_NAME: github-actions[bot]
           GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
         run: |
+          set +e
           npx semantic-release \
             --branches main \
-            --preset conventionalcommits 2>&1 | tee /tmp/sr-output.log || true
+            --preset conventionalcommits > /tmp/sr-output.log 2>&1
+          set -e
 
-          if rg -q "Published release" /tmp/sr-output.log; then
-            version=$(rg -oP 'The next release version is \K[0-9.]+' /tmp/sr-output.log || rg -oP 'Published release \K[0-9.]+' /tmp/sr-output.log)
+          cat /tmp/sr-output.log
+
+          if grep -q "Published release" /tmp/sr-output.log; then
+            version=$(grep -oP 'The next release version is \K[0-9.]+' /tmp/sr-output.log)
             echo "release_published=true" >> "$GITHUB_OUTPUT"
             echo "new_release_version=$version" >> "$GITHUB_OUTPUT"
             echo "new_release_major=$(echo "$version" | cut -d. -f1)" >> "$GITHUB_OUTPUT"
