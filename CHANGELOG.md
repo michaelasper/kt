@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.1.9 (2026-05-10)</small>
+
+* fix: extract binary from tar.gz before self-replace in upgrade ([ed6e6f1](https://github.com/michaelasper/kt/commit/ed6e6f1))
+
 ## <small>0.1.8 (2026-05-10)</small>
 
 * fix: capture semantic-release output reliably for GITHUB_OUTPUT ([c1a9302](https://github.com/michaelasper/kt/commit/c1a9302))
