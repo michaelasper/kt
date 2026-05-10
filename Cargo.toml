@@ -1,0 +1,34 @@
+[package]
+name = "kt"
+version = "0.1.0"
+edition = "2021"
+description = "A local, privacy-first polyglot codebase RAG via MCP"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+rmcp = { version = "1.6", features = ["server", "macros", "transport-io", "schemars"] }
+redis = { version = "0.27", features = ["tokio-comp"] }
+tree-sitter = "0.25"
+tree-sitter-language = "0.1"
+tree-sitter-rust = "0.24"
+tree-sitter-go = "0.25"
+tree-sitter-java = "0.23"
+ort = { version = "2.0.0-rc.12", features = ["ndarray"] }
+tokenizers = "0.21"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+schemars = "1"
+walkdir = "2"
+sha2 = "0.10"
+dirs = "6"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ndarray = "0.16"
+hex = "0.4"
+tokio-stream = "0.1"
+async-stream = "0.3"
+futures = "0.3"
