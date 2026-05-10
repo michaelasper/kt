@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.1.5 (2026-05-10)</small>
+
+* fix: handle RediSearch 'Index: already exists' error variant ([dab13fe](https://github.com/michaelasper/kt/commit/dab13fe))
+* ci: add Redis service for integration tests ([0dc25ed](https://github.com/michaelasper/kt/commit/0dc25ed))
+* ci: remove x86_64 macos build target ([1c9831d](https://github.com/michaelasper/kt/commit/1c9831d))
+* ci: set OPENSSL_DIR for macOS builds, fix clippy warning ([9c9e9d4](https://github.com/michaelasper/kt/commit/9c9e9d4))
+* ci: start redis-server directly instead of brew services ([49a1f9c](https://github.com/michaelasper/kt/commit/49a1f9c))
+* ci: use redis-stack-server for RediSearch module support ([2a7f095](https://github.com/michaelasper/kt/commit/2a7f095))
+
 ## <small>0.1.4 (2026-05-10)</small>
 
 * fix: graceful fallback to full sync when stored commit missing, fix upgrade asset pattern ([107b37a](https://github.com/michaelasper/kt/commit/107b37a))
