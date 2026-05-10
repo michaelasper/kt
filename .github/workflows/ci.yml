@@ -77,9 +77,16 @@ jobs:
 
       - name: Start Redis Stack (macOS)
         run: |
-          brew install openssl redis-stack
-          redis-stack-server --daemonize yes --port 6379
+          brew tap redis/redis
+          brew install --cask redis
+          brew install openssl
+          redis-server "$(brew --prefix)/etc/redis.conf" --daemonize yes
+          for i in $(seq 1 10); do
+            if redis-cli ping 2>/dev/null | grep -q PONG; then break; fi
+            sleep 1
+          done
           redis-cli ping
+          redis-cli MODULE LIST
           echo "OPENSSL_DIR=$(brew --prefix openssl)" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain

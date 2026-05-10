@@ -83,7 +83,7 @@ impl Storage {
                 info!("Index {INDEX_NAME} created successfully");
                 Ok(())
             }
-            Err(e) if e.to_string().contains("Index already exists") => {
+            Err(e) if e.to_string().to_lowercase().contains("already exists") => {
                 debug!("Index {INDEX_NAME} already exists (race condition)");
                 Ok(())
             }
@@ -651,7 +651,7 @@ impl Storage {
                 info!("Shadow index {SHADOW_INDEX_NAME} created successfully");
                 Ok(())
             }
-            Err(e) if e.to_string().contains("Index already exists") => {
+            Err(e) if e.to_string().to_lowercase().contains("already exists") => {
                 debug!("Shadow index {SHADOW_INDEX_NAME} already exists (race condition)");
                 Ok(())
             }
