@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.2.2 (2026-05-10)</small>
+
+* fix: build all binaries before publishing GitHub release ([95bb5fe](https://github.com/michaelasper/kt/commit/95bb5fe))
+
 ## <small>0.2.1 (2026-05-10)</small>
 
 * fix: eliminate release race condition and correct binary version ([3be481d](https://github.com/michaelasper/kt/commit/3be481d))
