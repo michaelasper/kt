@@ -392,59 +392,13 @@ const MAX_CONTENT_CHARS: usize = 8000;
 const MAX_RESPONSE_CHARS: usize = 32000;
 
 fn truncate_content(content: &str) -> &str {
-    if content.len() <= MAX_CONTENT_CHARS {
+    if content.chars().count() <= MAX_CONTENT_CHARS {
         return content;
     }
     match content.char_indices().nth(MAX_CONTENT_CHARS) {
         Some((idx, _)) => &content[..idx],
         None => content,
     }
-}
-
-fn strip_body(content: &str) -> String {
-    let mut result = String::new();
-    let mut brace_depth = 0i32;
-    let mut in_string = false;
-    let mut escape_next = false;
-
-    for ch in content.chars() {
-        if escape_next {
-            result.push(ch);
-            escape_next = false;
-            continue;
-        }
-
-        match ch {
-            '\\' if in_string => {
-                escape_next = true;
-                result.push(ch);
-            }
-            '"' | '\'' if !escape_next => {
-                in_string = !in_string;
-                result.push(ch);
-            }
-            '{' if !in_string => {
-                brace_depth += 1;
-                if brace_depth == 1 {
-                    result.push_str("{ ... }");
-                }
-            }
-            '}' if !in_string => {
-                brace_depth -= 1;
-                if brace_depth < 0 {
-                    result.push(ch);
-                    brace_depth = 0;
-                }
-            }
-            _ => {
-                if brace_depth == 0 {
-                    result.push(ch);
-                }
-            }
-        }
-    }
-
-    result
 }
 
 fn format_search_results(
@@ -458,7 +412,7 @@ fn format_search_results(
 
     for result in results {
         let content = if headers_only {
-            strip_body(&result.content)
+            result.signature.clone()
         } else {
             truncate_content(&result.content).to_string()
         };
@@ -507,7 +461,7 @@ fn format_file_results(
     let mut xml = format!("<file filepath=\"{}\">\n", xml_escape(filepath));
     for result in results {
         let content = if headers_only {
-            strip_body(&result.content)
+            xml_escape(&result.signature)
         } else {
             xml_escape(&result.content)
         };

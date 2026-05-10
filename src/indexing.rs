@@ -76,27 +76,10 @@ fn collect_chunks<'a>(
         if let Some(chunk) = build_chunk(node, source, relative_path, language, &parent_context) {
             chunks.push(chunk);
         }
-
-        let child_context = build_child_context(node, source, config);
-        if cursor.goto_first_child() {
-            loop {
-                collect_chunks(
-                    cursor,
-                    source,
-                    relative_path,
-                    language,
-                    config,
-                    chunks,
-                    child_context.clone(),
-                );
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-            cursor.goto_parent();
-        }
-        return;
     }
+
+    let child_context = build_child_context(node, source, config);
+    let ctx = child_context.or(parent_context);
 
     if cursor.goto_first_child() {
         loop {
@@ -107,7 +90,7 @@ fn collect_chunks<'a>(
                 language,
                 config,
                 chunks,
-                parent_context.clone(),
+                ctx.clone(),
             );
             if !cursor.goto_next_sibling() {
                 break;
@@ -360,13 +343,15 @@ impl Foo {
         let tree = parser.parse(source, None).unwrap();
 
         let chunks = extract_chunks(&tree, source, "test.rs", Language::Rust, &config);
-        assert!(chunks.len() >= 3);
+        assert!(chunks.len() >= 2);
 
         let impl_fn = chunks
             .iter()
             .find(|c| c.name == "get_x")
             .expect("should find get_x");
         assert!(impl_fn.content.contains("impl"));
+        assert_eq!(impl_fn.node_type, "function");
+        assert!(chunks.iter().all(|c| c.node_type != "impl"));
     }
 
     #[test]

@@ -29,7 +29,6 @@ impl LanguageConfig {
                     "function_item",
                     "struct_item",
                     "enum_item",
-                    "impl_item",
                     "trait_item",
                     "type_alias",
                     "const_item",

@@ -185,19 +185,34 @@ impl Storage {
             .flat_map(|f| f.to_le_bytes())
             .collect();
 
-        let lang_filter = match language {
-            Some(lang) => format!(" @language:{{{}}}", lang.as_str()),
-            None => String::new(),
-        };
-
-        let query_str = if query_text.is_empty() {
-            format!("*{lang_filter}=>[KNN {top_k} @embedding $query_vec AS vector_score]")
+        let effective_query = query_text.trim();
+        let query_str = if effective_query.is_empty() {
+            match language {
+                Some(lang) => {
+                    format!("@language:{{{}}}=>[KNN {top_k} @embedding $query_vec AS vector_score]", lang.as_str())
+                }
+                None => {
+                    format!("*=>[KNN {top_k} @embedding $query_vec AS vector_score]")
+                }
+            }
         } else {
-            format!(
-                "({}){lang_filter}=>[KNN {} @embedding $query_vec AS vector_score]",
-                escape_fts_query(query_text),
-                top_k
-            )
+            match language {
+                Some(lang) => {
+                    format!(
+                        "(@language:{{{}}} ({}))=>[KNN {} @embedding $query_vec AS vector_score]",
+                        lang.as_str(),
+                        escape_fts_query(effective_query),
+                        top_k
+                    )
+                }
+                None => {
+                    format!(
+                        "({})=>[KNN {} @embedding $query_vec AS vector_score]",
+                        escape_fts_query(effective_query),
+                        top_k
+                    )
+                }
+            }
         };
 
         debug!("Hybrid search query: {}", query_str);
@@ -224,6 +239,10 @@ impl Storage {
     }
 
     pub async fn read_file_chunks(&self, filepath: &str) -> anyhow::Result<Vec<SearchResult>> {
+        if filepath.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
         let mut conn = self.connection().await?;
 
         let query_str = format!("@filepath:\"{}\"", escape_exact_match(filepath));
@@ -537,16 +556,23 @@ fn parse_language(s: &str) -> Language {
 }
 
 fn escape_fts_query(query: &str) -> String {
-    let mut result = String::with_capacity(query.len() * 2);
+    let mut result = String::with_capacity(query.len());
     for ch in query.chars() {
+        if ch.is_control() {
+            continue;
+        }
         match ch {
-            '\\' | '"' | '(' | ')' | ':' | '{' | '}' | '|' | '@' | '!' | '-' | '*' | '['
-            | ']' => {
+            '\\' | '"' | '\'' | '(' | ')' | ':' | '{' | '}' | '|' | '@' | '!' | '-' | '*' | '['
+            | ']' | ';' | ',' | '.' | '~' | '%' | '^' | '&' | '#' | '<' | '>' | '/' | '$' => {
                 result.push('\\');
                 result.push(ch);
             }
             _ => result.push(ch),
         }
+    }
+    if result.is_empty() {
+        warn!("FTS query collapsed to empty after escaping, falling back to wildcard: {:?}", query);
+        result = "*".to_string();
     }
     result
 }
