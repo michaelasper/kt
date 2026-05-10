@@ -928,6 +928,7 @@ fn parse_search_results(value: redis::Value) -> anyhow::Result<Vec<SearchResult>
 fn is_index_not_found_error(err: &redis::RedisError) -> bool {
     let msg = err.to_string().to_lowercase();
     msg.contains("unknown index")
+        || msg.contains("no such index")
         || (msg.contains("index name") && (msg.contains("unknown") || msg.contains("not found")))
 }
 
@@ -1007,10 +1008,12 @@ mod tests {
         let err1 = RedisError::from((redis::ErrorKind::ResponseError, "Unknown: index name"));
         let err2 = RedisError::from((redis::ErrorKind::ResponseError, "Unknown Index name"));
         let err3 = RedisError::from((redis::ErrorKind::ResponseError, "index name not found"));
+        let err4 = RedisError::from((redis::ErrorKind::ResponseError, "no such index"));
 
         assert!(is_index_not_found_error(&err1));
         assert!(is_index_not_found_error(&err2));
         assert!(is_index_not_found_error(&err3));
+        assert!(is_index_not_found_error(&err4));
     }
 
     #[test]
