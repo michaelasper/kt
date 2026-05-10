@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.0 (2026-05-10)
+
+* feat(ui): overhaul sync UI with in-place updates and matrix rain ([48bfc9e](https://github.com/michaelasper/kt/commit/48bfc9e))
+
 ## <small>0.2.2 (2026-05-10)</small>
 
 * fix: build all binaries before publishing GitHub release ([95bb5fe](https://github.com/michaelasper/kt/commit/95bb5fe))
