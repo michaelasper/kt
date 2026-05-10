@@ -99,8 +99,9 @@ impl Storage {
         match result {
             Ok(_) => Ok(true),
             Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("Unknown Index name") || msg.contains("not found") {
+                if is_index_not_found_error(&e)
+                    || e.to_string().to_lowercase().contains("not found")
+                {
                     Ok(false)
                 } else {
                     Err(KtError::Redis(e).into())
@@ -567,8 +568,9 @@ impl Storage {
         match result {
             Ok(_) => Ok(true),
             Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("Unknown Index name") || msg.contains("not found") {
+                if is_index_not_found_error(&e)
+                    || e.to_string().to_lowercase().contains("not found")
+                {
                     Ok(false)
                 } else {
                     Err(KtError::Redis(e).into())
@@ -822,6 +824,11 @@ fn parse_search_results(value: redis::Value) -> anyhow::Result<Vec<SearchResult>
     }
 
     Ok(results)
+}
+
+fn is_index_not_found_error(err: &redis::RedisError) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("unknown index") || msg.contains("index name") && msg.contains("unknown")
 }
 
 fn parse_language(s: &str) -> Language {
