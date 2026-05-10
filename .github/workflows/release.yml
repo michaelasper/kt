@@ -30,26 +30,20 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install semantic-release dependencies
         run: |
           npm install -g \
-            semantic-release@21 \
-            @semantic-release/git@10 \
+            semantic-release@24 \
+            @semantic-release/commit-analyzer@13 \
+            @semantic-release/release-notes-generator@14 \
             @semantic-release/changelog@6 \
-            @semantic-release/exec@6 \
-            conventional-changelog-conventionalcommits@7
+            @semantic-release/git@10 \
+            @semantic-release/github@11
 
       - name: Run semantic-release
         id: semantic
@@ -62,12 +56,6 @@ jobs:
         run: |
           npx semantic-release \
             --branches main \
-            --plugins \
-              @semantic-release/commit-analyzer \
-              @semantic-release/release-notes-generator \
-              @semantic-release/changelog \
-              @semantic-release/git \
-              @semantic-release/github \
             --preset conventionalcommits
 
   build-release:
@@ -93,12 +81,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
+          targets: ${{ matrix.target }}
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
@@ -111,7 +96,7 @@ jobs:
           cd -
 
       - name: Upload release asset
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifact_name }}.tar.gz
           tag_name: v${{ needs.semantic-release.outputs.new_release_version }}
