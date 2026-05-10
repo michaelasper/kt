@@ -6,6 +6,7 @@ const INDEX_NAME: &str = "idx:kt_codebase";
 const KEY_PREFIX: &str = "kt:doc:";
 const SHADOW_INDEX_NAME: &str = "idx:kt_shadow";
 const SHADOW_KEY_PREFIX: &str = "kt:shadow:";
+const SYNC_STATE_PREFIX: &str = "kt:sync_state:";
 
 #[derive(Debug, Clone)]
 pub struct Storage {
@@ -451,6 +452,52 @@ impl Storage {
         Ok(mtimes)
     }
 
+    pub async fn get_last_synced_commit(
+        &self,
+        directory: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let mut conn = self.connection().await?;
+        let key = format!("{}{}", SYNC_STATE_PREFIX, directory);
+
+        let result: Option<String> = redis::cmd("HGET")
+            .arg(&key)
+            .arg("last_commit")
+            .query_async(&mut conn)
+            .await?;
+
+        Ok(result)
+    }
+
+    pub async fn set_last_synced_commit(
+        &self,
+        directory: &str,
+        commit_sha: &str,
+    ) -> anyhow::Result<()> {
+        let mut conn = self.connection().await?;
+        let key = format!("{}{}", SYNC_STATE_PREFIX, directory);
+
+        redis::cmd("HSET")
+            .arg(&key)
+            .arg("last_commit")
+            .arg(commit_sha)
+            .query_async::<redis::Value>(&mut conn)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn clear_sync_state(&self, directory: &str) -> anyhow::Result<()> {
+        let mut conn = self.connection().await?;
+        let key = format!("{}{}", SYNC_STATE_PREFIX, directory);
+
+        redis::cmd("DEL")
+            .arg(&key)
+            .query_async::<redis::Value>(&mut conn)
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn store_chunk_with_mtime(
         &self,
         chunk: &Chunk,
@@ -491,6 +538,61 @@ impl Storage {
         }
 
         cmd.query_async::<redis::Value>(&mut conn).await?;
+        Ok(())
+    }
+
+    pub async fn store_chunks_batch_with_mtimes(
+        &self,
+        chunks: &[Chunk],
+        embeddings: &[Vec<f32>],
+        mtimes: &[String],
+    ) -> anyhow::Result<()> {
+        let mut conn = self.connection().await?;
+        let mut pipe = redis::pipe();
+
+        for i in 0..chunks.len() {
+            let chunk = &chunks[i];
+            let embedding = &embeddings[i];
+            let mtime = &mtimes[i];
+
+            let key = format!("{KEY_PREFIX}{}", chunk.chunk_id);
+            let embedding_bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+
+            let pipe_cmd = pipe.cmd("HSET");
+            pipe_cmd
+                .arg(&key)
+                .arg("chunk_id")
+                .arg(&chunk.chunk_id)
+                .arg("filepath")
+                .arg(&chunk.filepath)
+                .arg("language")
+                .arg(chunk.language.as_str())
+                .arg("node_type")
+                .arg(&chunk.node_type)
+                .arg("name")
+                .arg(&chunk.name)
+                .arg("signature")
+                .arg(&chunk.signature)
+                .arg("content")
+                .arg(&chunk.content)
+                .arg("start_line")
+                .arg(chunk.start_line as i64)
+                .arg("end_line")
+                .arg(chunk.end_line as i64)
+                .arg("embedding")
+                .arg(&embedding_bytes)
+                .arg("mtime")
+                .arg(mtime);
+
+            if let Some(ref parent_ctx) = chunk.parent_context {
+                pipe_cmd.arg("parent_context").arg(parent_ctx);
+            }
+
+            pipe_cmd.ignore();
+        }
+
+        pipe.query_async::<redis::Value>(&mut conn).await?;
+        info!("Stored {} chunks with mtimes in batch", chunks.len());
         Ok(())
     }
 
