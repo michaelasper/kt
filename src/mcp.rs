@@ -485,7 +485,7 @@ impl KtServer {
 
         let msg = format!(
             "<shadow_index files=\"{}\" chunks=\"{}\" ttl=\"{}\" base=\"{}\" />",
-            total_files, total_chunks, ttl_seconds, base_branch
+            total_files, total_chunks, ttl_seconds, base_ref
         );
         info!("{msg}");
         Ok(CallToolResult::success(vec![Content::text(msg)]))

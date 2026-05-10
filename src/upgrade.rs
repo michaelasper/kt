@@ -72,8 +72,9 @@ impl Upgrader {
         info!("Checking for updates...");
 
         let release = self.fetch_latest_release().await?;
+        let tag = release.tag_name.trim_start_matches('v');
         let latest_version =
-            Version::parse(&release.tag_name).context("Failed to parse latest version")?;
+            Version::parse(tag).context("Failed to parse latest version")?;
 
         if latest_version <= self.current_version {
             return Ok(None);
@@ -154,7 +155,7 @@ impl Upgrader {
             }
         };
 
-        let latest_version = Version::parse(&release.tag_name)?;
+        let latest_version = Version::parse(release.tag_name.trim_start_matches('v'))?;
 
         println!(
             "{} New version available: {}",
