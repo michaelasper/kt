@@ -1,24 +1,9 @@
 use console::style;
-use crossterm::{
-    cursor::{MoveUp, RestorePosition, SavePosition},
-    execute,
-    style::{Color, Print, SetForegroundColor},
-    terminal::{Clear, ClearType},
-};
-use indicatif::{ProgressBar, ProgressStyle};
-use std::io::{stdout, IsTerminal, Write};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use std::io::stdout;
+use std::io::IsTerminal;
 use std::sync::mpsc;
-
-const RAIN_CHARS: &[char] = &[
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
-];
-const RAIN_WIDTH: usize = 40;
-const RAIN_LINES: usize = 4;
-
-enum Msg {
-    NewFile,
-    Stop,
-}
+use std::time::Duration;
 
 pub enum SyncUI {
     Pretty(PrettySyncUI),
@@ -36,7 +21,7 @@ impl SyncUI {
 
     pub fn start_scan(&self, dir: &str) {
         match self {
-            SyncUI::Pretty(ui) => ui.start_scan(dir),
+            SyncUI::Pretty(_) => {}
             SyncUI::Plain => tracing::info!("Scanning {dir}..."),
         }
     }
@@ -66,196 +51,136 @@ impl SyncUI {
 }
 
 pub struct PrettySyncUI {
+    multi: MultiProgress,
+    target_bar: ProgressBar,
+    _rain_bars: Vec<ProgressBar>,
+    chunks_bar: ProgressBar,
     total_files: usize,
-    file_index: usize,
     total_chunks: usize,
-    tx: mpsc::Sender<Msg>,
+    tx: mpsc::Sender<()>,
     rain_handle: Option<std::thread::JoinHandle<()>>,
-    progress_bar: ProgressBar,
 }
 
 impl PrettySyncUI {
     fn new(total_files: usize) -> Self {
-        let (tx, rx) = mpsc::channel();
+        let multi = MultiProgress::with_draw_target(ProgressDrawTarget::stdout());
 
-        let handle = std::thread::Builder::new()
-            .name("kt-rain".into())
-            .spawn(move || rain_loop(rx))
-            .ok();
+        let target_bar = multi.add(ProgressBar::new_spinner());
+        let target_style = ProgressStyle::with_template("  [{prefix:.cyan}] {msg:.bold}")
+            .unwrap_or_else(|_| ProgressStyle::default_spinner())
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈");
+        target_bar.set_style(target_style);
+        target_bar.set_prefix(" TARGET ");
 
-        let pb = ProgressBar::hidden();
-        pb.set_style(
-            ProgressStyle::with_template(
-                "  [{prefix:.cyan} {wide_bar:.green/dim} {pos}/{len}] {msg:.dim}",
-            )
-            .unwrap()
-            .progress_chars("x=:"),
+        let mut rain_bars = Vec::new();
+        for i in 0..3 {
+            let bar = multi.add(ProgressBar::new_spinner());
+            let rain_style = ProgressStyle::with_template("{msg}")
+                .unwrap_or_else(|_| ProgressStyle::default_spinner());
+            bar.set_style(rain_style);
+            if i == 0 {
+                bar.set_message("           ↓  ↓  ↓  ↓  ↓");
+            } else {
+                bar.set_message("           0  1  0  1  0");
+            }
+            rain_bars.push(bar);
+        }
+
+        let spacer = multi.add(ProgressBar::new_spinner());
+        spacer.set_style(
+            ProgressStyle::with_template("").unwrap_or_else(|_| ProgressStyle::default_spinner()),
         );
 
+        let chunks_bar = multi.add(ProgressBar::new(0));
+        let chunks_style =
+            ProgressStyle::with_template("  [{prefix:.cyan}] {wide_bar:.green/dim} ({pos}/{len})")
+                .unwrap_or_else(|_| ProgressStyle::default_bar())
+                .progress_chars("▓▓░");
+        chunks_bar.set_style(chunks_style);
+        chunks_bar.set_prefix(" CHUNKS ");
+
+        let (tx, rx) = mpsc::channel();
+        let rain_bars_clone = rain_bars.clone();
+        let handle = std::thread::Builder::new()
+            .name("kt-rain".into())
+            .spawn(move || rain_loop(rx, rain_bars_clone))
+            .ok();
+
         Self {
+            multi,
+            target_bar,
+            _rain_bars: rain_bars,
+            chunks_bar,
             total_files,
-            file_index: 0,
             total_chunks: 0,
             tx,
             rain_handle: handle,
-            progress_bar: pb,
         }
-    }
-
-    fn start_scan(&self, dir: &str) {
-        let width = 51;
-        let top = format_box_top(width);
-        let bot = format_box_bot(width);
-        let line = format_box_line(
-            &format!("  {} {}", style("SCANNING").cyan().bold(), dir),
-            width,
-        );
-        println!("\n{top}\n{line}\n{bot}\n");
     }
 
     fn start_file(&mut self, path: &str, file_index: usize) {
-        self.file_index = file_index;
-
-        let width = 51;
-        let top = format_box_top(width);
-        let bot = format_box_bot(width);
-        let label = style("SHREDDING").cyan().bold();
-        let content = format!("  {} {}", label, truncate_path(path, 36));
-        let line = format_box_line(&content, width);
-
-        println!("{top}");
-        println!("{line}");
-        println!("{bot}");
-        println!();
-
-        self.progress_bar.set_length(0);
-        self.progress_bar.set_position(0);
-        self.progress_bar.set_prefix("CHUNKS");
-        self.progress_bar
-            .set_message(format!("FILE {}/{}", file_index + 1, self.total_files));
-
-        let _ = self.tx.send(Msg::NewFile);
+        self.target_bar.set_message(path.to_string());
+        self.chunks_bar.set_length(0);
+        self.chunks_bar.set_position(0);
+        self.target_bar
+            .set_prefix(format!(" TARGET {}/{}", file_index + 1, self.total_files));
     }
 
     fn finish_file(&mut self, _path: &str, chunks: usize) {
-        let _ = self.tx.send(Msg::Stop);
-        if let Some(handle) = self.rain_handle.take() {
-            let _ = handle.join();
-        }
-
-        self.progress_bar.finish_and_clear();
-        println!(
-            "  {} {} {} chunks extracted\n",
-            style("x").green(),
-            style(_path).dim(),
-            style(chunks).green()
-        );
-
         self.total_chunks += chunks;
-
-        let (tx, rx) = mpsc::channel();
-        self.tx = tx;
-        let handle = std::thread::Builder::new()
-            .name("kt-rain".into())
-            .spawn(move || rain_loop(rx))
-            .ok();
-        self.rain_handle = handle;
+        self.chunks_bar.set_length(chunks as u64);
+        self.chunks_bar.set_position(chunks as u64);
     }
 
     fn finish(mut self, total_files: usize, total_chunks: usize) {
-        let _ = self.tx.send(Msg::Stop);
+        let _ = self.tx.send(());
         if let Some(handle) = self.rain_handle.take() {
             let _ = handle.join();
         }
-        self.progress_bar.finish_and_clear();
+
+        self.multi.clear().ok();
 
         let width = 51;
         let top = format_box_top(width);
         let bot = format_box_bot(width);
-        let line1 = format_box_line(&format!("  {} SYNC COMPLETE", style("x").green()), width);
+        let line1 = format_box_line(&format!("  {} SYNC COMPLETE", style("✓").green()), width);
         let detail = format!(
             "    {} files shredded into {} chunks",
             total_files, total_chunks
         );
         let line2 = format_box_line(&detail, width);
 
-        println!("{top}");
-        println!("{line1}");
-        println!("{line2}");
-        println!("{bot}\n");
+        println!("\n{top}\n{line1}\n{line2}\n{bot}\n");
     }
 }
 
-fn rain_loop(rx: mpsc::Receiver<Msg>) {
-    let mut rng = fastrand::Rng::new();
-    let mut columns: Vec<Vec<char>> = vec![vec![' '; RAIN_LINES]; RAIN_WIDTH];
-    let mut tick = 0u64;
-    let mut active = false;
-
+fn rain_loop(rx: mpsc::Receiver<()>, bars: Vec<ProgressBar>) {
     loop {
-        match rx.try_recv() {
-            Ok(Msg::Stop) => {
-                if active {
-                    let mut stdout = stdout();
-                    for _ in 0..RAIN_LINES {
-                        let _ = execute!(stdout, MoveUp(1), Clear(ClearType::CurrentLine));
-                    }
-                }
-                return;
-            }
-            Ok(Msg::NewFile) => {
-                columns = vec![vec![' '; RAIN_LINES]; RAIN_WIDTH];
-                tick = 0;
-                active = true;
-                for _ in 0..RAIN_LINES {
-                    println!();
-                }
-            }
-            Err(mpsc::TryRecvError::Disconnected) => return,
-            Err(mpsc::TryRecvError::Empty) => {}
+        if rx.try_recv().is_ok() {
+            break;
         }
 
-        if !active {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            continue;
-        }
+        bars[0].set_message("           ↓  ↓  ↓  ↓  ↓");
 
-        let mut stdout = stdout();
-        let _ = execute!(stdout, SavePosition);
-
-        for (row, row_data) in columns.iter_mut().enumerate().take(RAIN_LINES) {
-            let _ = execute!(
-                stdout,
-                MoveUp((RAIN_LINES - row) as u16),
-                Clear(ClearType::CurrentLine)
-            );
-
-            for (col, cell) in row_data.iter_mut().enumerate() {
-                let active_col = (tick + col as u64) % 7 < 4;
-                if active_col || rng.bool() {
-                    *cell = RAIN_CHARS[rng.usize(..RAIN_CHARS.len())];
-                }
-
-                if *cell != ' ' {
-                    let bright = rng.bool();
-                    let color = if bright {
-                        Color::Green
-                    } else {
-                        Color::DarkCyan
-                    };
-                    let _ = execute!(stdout, SetForegroundColor(color), Print(*cell), Print(' '));
+        for bar in bars.iter().skip(1) {
+            let mut bits = String::with_capacity(20);
+            bits.push_str("           ");
+            for i in 0..5 {
+                let bit = if fastrand::bool() { "1" } else { "0" };
+                let colored = if fastrand::bool() {
+                    style(bit).green().to_string()
                 } else {
-                    print!("   ");
+                    style(bit).cyan().to_string()
+                };
+                bits.push_str(&colored);
+                if i < 4 {
+                    bits.push_str("  ");
                 }
             }
-            println!();
+            bar.set_message(bits);
         }
 
-        let _ = execute!(stdout, RestorePosition);
-        let _ = stdout.flush();
-
-        tick += 1;
-        std::thread::sleep(std::time::Duration::from_millis(80));
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -287,13 +212,4 @@ fn format_box_line(content: &str, width: usize) -> String {
         " ".repeat(padding),
         style(" |").cyan()
     )
-}
-
-fn truncate_path(path: &str, max_len: usize) -> String {
-    if path.len() <= max_len {
-        path.to_string()
-    } else {
-        let start = path.len() - max_len + 3;
-        format!("...{}", &path[start..])
-    }
 }
