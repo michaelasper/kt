@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.3.2 (2026-05-10)</small>
+
+* fix(ci): defer release publication until build artifacts are ready ([d84522f](https://github.com/michaelasper/kt/commit/d84522f))
+
 ## <small>0.3.1 (2026-05-10)</small>
 
 * fix(ui): ensure sync animation is rendered by ticking progress bars ([9aedea8](https://github.com/michaelasper/kt/commit/9aedea8))
