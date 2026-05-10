@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.1.3 (2026-05-10)</small>
+
+* fix: strip v prefix from GitHub tag before semver parse ([58f41a4](https://github.com/michaelasper/kt/commit/58f41a4))
+
 ## <small>0.1.2 (2026-05-10)</small>
 
 * fix: accept commit SHA in get_diff_files for partial sync ([913e452](https://github.com/michaelasper/kt/commit/913e452))
