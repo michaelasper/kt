@@ -1,4 +1,5 @@
 use crate::embedding::EmbeddingEngine;
+use crate::git;
 use crate::storage::Storage;
 use crate::{Config, Language, SearchResult};
 use rmcp::handler::server::wrapper::Parameters;
@@ -35,7 +36,9 @@ pub struct SearchParams {
     pub language: Option<String>,
     #[schemars(description = "Number of results to return (default: 3, max: 10)")]
     pub top_k: Option<usize>,
-    #[schemars(description = "If true, return only function/type signatures without bodies to save tokens")]
+    #[schemars(
+        description = "If true, return only function/type signatures without bodies to save tokens"
+    )]
     pub headers_only: Option<bool>,
 }
 
@@ -49,6 +52,22 @@ pub struct ReadFileParams {
 pub struct SyncParams {
     #[schemars(description = "Path to the directory to sync")]
     pub directory_path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GitStatusParams {
+    #[schemars(description = "Path to the git repository")]
+    pub directory_path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct IndexPrParams {
+    #[schemars(description = "Path to the git repository")]
+    pub directory_path: String,
+    #[schemars(description = "Compare against this branch (default: 'main')")]
+    pub base_branch: Option<String>,
+    #[schemars(description = "Shadow index TTL in seconds (default: 7200 / 2 hours)")]
+    pub ttl_seconds: Option<u64>,
 }
 
 impl KtServer {
@@ -104,12 +123,26 @@ impl KtServer {
         let query_embedding = engine.embed(&params.query).map_err(mcp_error)?;
 
         let storage = self.inner.storage.read().await;
-        let results = storage
+
+        let main_results = storage
             .hybrid_search(&query_embedding, &params.query, language.as_ref(), top_k)
             .await
             .map_err(mcp_error)?;
 
-        let results = deduplicate_results(results);
+        let shadow_results = storage
+            .search_shadow(&query_embedding, &params.query, language.as_ref(), top_k)
+            .await
+            .unwrap_or_default();
+
+        let shadow_ids: std::collections::HashSet<String> =
+            shadow_results.iter().map(|r| r.chunk_id.clone()).collect();
+
+        let filtered_main: Vec<SearchResult> = main_results
+            .into_iter()
+            .filter(|r| !shadow_ids.contains(&r.chunk_id))
+            .collect();
+
+        let results = merge_and_deduplicate(filtered_main, shadow_results, top_k);
 
         let one_hop = resolve_one_hop_context(&storage, &results).await;
 
@@ -127,10 +160,20 @@ impl KtServer {
         self.ensure_ready().await.map_err(mcp_error)?;
 
         let storage = self.inner.storage.read().await;
+
         let results = storage
-            .read_file_chunks(&params.filepath)
+            .read_shadow_file_chunks(&params.filepath)
             .await
-            .map_err(mcp_error)?;
+            .unwrap_or_default();
+
+        let results = if !results.is_empty() {
+            results
+        } else {
+            storage
+                .read_file_chunks(&params.filepath)
+                .await
+                .map_err(mcp_error)?
+        };
 
         if results.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(format!(
@@ -218,6 +261,129 @@ impl KtServer {
         info!("{msg}");
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
+
+    #[tool(
+        description = "Get git status information including current branch, commit SHA, and changed files."
+    )]
+    async fn kt_git_status(
+        &self,
+        Parameters(params): Parameters<GitStatusParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let root = std::path::Path::new(&params.directory_path);
+        let git_info = git::get_git_info(root).map_err(mcp_error)?;
+
+        let branch = git_info.branch.unwrap_or_else(|| "detached".to_string());
+        let commit_sha = git_info.commit_sha.unwrap_or_else(|| "unknown".to_string());
+
+        let mut changed_files_xml = String::new();
+        for file in &git_info.changed_files {
+            changed_files_xml.push_str(&format!(
+                "  <changed_file status=\"{}\">{}</changed_file>\n",
+                file.status,
+                xml_escape(&file.path)
+            ));
+        }
+
+        let xml = format!(
+            "<git_status branch=\"{}\" commit=\"{}\" dirty=\"{}\">\n{}</git_status>",
+            xml_escape(&branch),
+            xml_escape(&commit_sha),
+            git_info.is_dirty,
+            changed_files_xml
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(xml)]))
+    }
+
+    #[tool(
+        description = "Index a pull request or working tree changes into the shadow (ephemeral) index. Only changed files are indexed. Shadow chunks auto-expire after TTL (default: 2 hours)."
+    )]
+    async fn kt_index_pr(
+        &self,
+        Parameters(params): Parameters<IndexPrParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.ensure_ready().await.map_err(mcp_error)?;
+
+        let root = std::path::Path::new(&params.directory_path);
+        if !root.exists() {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "<error>Directory not found: {}</error>",
+                params.directory_path
+            ))]));
+        }
+
+        let storage = self.inner.storage.read().await;
+        storage.ensure_shadow_index().await.map_err(mcp_error)?;
+
+        let base_branch = params.base_branch.as_deref().unwrap_or("main");
+        let ttl_seconds = params.ttl_seconds.unwrap_or(7200);
+
+        let changed_files = git::get_diff_files(root, base_branch).map_err(mcp_error)?;
+
+        if changed_files.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "<result>No changed files found to index.</result>".to_string(),
+            )]));
+        }
+
+        info!("Indexing PR: {} changed files", changed_files.len());
+
+        let mut total_chunks = 0usize;
+        let mut total_files = 0usize;
+
+        let embedding_guard = self.inner.embedding.read().await;
+        let engine = embedding_guard
+            .as_ref()
+            .ok_or_else(|| mcp_error("Embedding engine not available"))?;
+
+        for filepath in &changed_files {
+            let file_path = root.join(filepath);
+            if !file_path.exists() {
+                info!("Skipping deleted file: {}", filepath);
+                continue;
+            }
+
+            let language = crate::Language::from_extension(
+                file_path.extension().and_then(|e| e.to_str()).unwrap_or(""),
+            );
+
+            if language.is_none() {
+                continue;
+            }
+
+            let language = language.unwrap();
+            let chunks = crate::indexing::parse_file(&file_path, filepath, language);
+
+            if chunks.is_empty() {
+                continue;
+            }
+
+            let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+            match engine.embed_batch(&texts) {
+                Ok(embeddings) => {
+                    if let Err(e) = storage
+                        .store_shadow_chunks_batch(&chunks, &embeddings, ttl_seconds)
+                        .await
+                    {
+                        warn!("Failed to store shadow chunks for {}: {e}", filepath);
+                        continue;
+                    }
+                    total_chunks += chunks.len();
+                    total_files += 1;
+                }
+                Err(e) => {
+                    warn!("Failed to embed chunks for {}: {e}", filepath);
+                }
+            }
+        }
+
+        let msg = format!(
+            "<shadow_index files=\"{}\" chunks=\"{}\" ttl=\"{}\" base=\"{}\" />",
+            total_files, total_chunks, ttl_seconds, base_branch
+        );
+        info!("{msg}");
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
+    }
 }
 
 #[tool_handler]
@@ -268,6 +434,34 @@ fn deduplicate_results(results: Vec<SearchResult>) -> Vec<SearchResult> {
         .into_iter()
         .filter(|r| seen.insert(r.chunk_id.clone()))
         .collect()
+}
+
+fn merge_and_deduplicate(
+    main_results: Vec<SearchResult>,
+    shadow_results: Vec<SearchResult>,
+    top_k: usize,
+) -> Vec<SearchResult> {
+    let mut all_results = Vec::with_capacity(main_results.len() + shadow_results.len());
+    all_results.extend(main_results);
+    all_results.extend(shadow_results);
+
+    all_results.sort_by(|a, b| {
+        a.score
+            .partial_cmp(&b.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut seen = HashSet::new();
+    let mut deduped = all_results
+        .into_iter()
+        .filter(|r| seen.insert(r.chunk_id.clone()))
+        .collect::<Vec<_>>();
+
+    if deduped.len() > top_k {
+        deduped.truncate(top_k);
+    }
+
+    deduped
 }
 
 async fn resolve_one_hop_context(
@@ -418,8 +612,8 @@ fn format_search_results(
         };
 
         let parent_xml = if let Some(ref parent_ctx) = result.parent_context {
-            if let Some(parent_result) = extract_parent_type_name(parent_ctx)
-                .and_then(|name| one_hop.get(&name))
+            if let Some(parent_result) =
+                extract_parent_type_name(parent_ctx).and_then(|name| one_hop.get(&name))
             {
                 format!(
                     "  <parent_struct>\n    {}\n  </parent_struct>\n",
@@ -453,11 +647,7 @@ fn format_search_results(
     xml
 }
 
-fn format_file_results(
-    results: &[SearchResult],
-    filepath: &str,
-    headers_only: bool,
-) -> String {
+fn format_file_results(results: &[SearchResult], filepath: &str, headers_only: bool) -> String {
     let mut xml = format!("<file filepath=\"{}\">\n", xml_escape(filepath));
     for result in results {
         let content = if headers_only {
@@ -482,4 +672,58 @@ fn xml_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_result(chunk_id: &str, score: f64) -> SearchResult {
+        SearchResult {
+            chunk_id: chunk_id.to_string(),
+            filepath: "src/example.rs".to_string(),
+            language: Language::Rust,
+            node_type: "function".to_string(),
+            name: format!("name_{chunk_id}"),
+            signature: String::new(),
+            content: String::new(),
+            parent_context: None,
+            score,
+        }
+    }
+
+    #[test]
+    fn test_merge_and_deduplicate_sorts_and_truncates() {
+        let main = vec![
+            sample_result("a", 0.7),
+            sample_result("b", 0.2),
+            sample_result("d", 0.1),
+        ];
+        let shadow = vec![sample_result("c", 0.4), sample_result("e", 0.3)];
+
+        let merged = merge_and_deduplicate(main, shadow, 3);
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0].chunk_id, "d");
+        assert_eq!(merged[1].chunk_id, "b");
+        assert_eq!(merged[2].chunk_id, "e");
+    }
+
+    #[test]
+    fn test_merge_and_deduplicate_deduplicates_chunk_ids() {
+        let main = vec![
+            sample_result("a", 0.8),
+            sample_result("a", 0.1),
+            sample_result("b", 0.9),
+        ];
+        let shadow = vec![sample_result("c", 0.5), sample_result("c", 0.2)];
+
+        let merged = merge_and_deduplicate(main, shadow, 10);
+        assert_eq!(merged.len(), 3);
+
+        let ids = merged
+            .iter()
+            .map(|r| r.chunk_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["a", "c", "b"]);
+    }
 }

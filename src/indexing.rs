@@ -218,10 +218,7 @@ fn extract_signature(node: Node, source: &str) -> String {
 
     if matches!(
         kind,
-        "function_item"
-            | "function_declaration"
-            | "method_declaration"
-            | "constructor_declaration"
+        "function_item" | "function_declaration" | "method_declaration" | "constructor_declaration"
     ) {
         let first_line = text.lines().next().unwrap_or("").trim();
         if let Some(stripped) = first_line.strip_suffix('{') {
@@ -278,11 +275,7 @@ fn fallback_line_chunks(source: &str, relative_path: &str, language: Language) -
         let start_line = i * chunk_size;
         let end_line = start_line + chunk_lines.len().saturating_sub(1);
         let content = chunk_lines.join("\n");
-        let name = format!(
-            "lines_{}_{}",
-            start_line,
-            end_line
-        );
+        let name = format!("lines_{}_{}", start_line, end_line);
         let chunk_id = Chunk::generate_id(relative_path, &name);
 
         chunks.push(Chunk {

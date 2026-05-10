@@ -4,6 +4,8 @@ use tracing::{debug, info, warn};
 
 const INDEX_NAME: &str = "idx:kt_codebase";
 const KEY_PREFIX: &str = "kt:doc:";
+const SHADOW_INDEX_NAME: &str = "idx:kt_shadow";
+const SHADOW_KEY_PREFIX: &str = "kt:shadow:";
 
 #[derive(Debug, Clone)]
 pub struct Storage {
@@ -115,16 +117,26 @@ impl Storage {
         debug!("Storing chunk {} at key {}", chunk.name, key);
         let mut cmd = cmd("HSET");
         cmd.arg(&key)
-            .arg("chunk_id").arg(&chunk.chunk_id)
-            .arg("filepath").arg(&chunk.filepath)
-            .arg("language").arg(chunk.language.as_str())
-            .arg("node_type").arg(&chunk.node_type)
-            .arg("name").arg(&chunk.name)
-            .arg("signature").arg(&chunk.signature)
-            .arg("content").arg(&chunk.content)
-            .arg("start_line").arg(chunk.start_line as i64)
-            .arg("end_line").arg(chunk.end_line as i64)
-            .arg("embedding").arg(&embedding_bytes);
+            .arg("chunk_id")
+            .arg(&chunk.chunk_id)
+            .arg("filepath")
+            .arg(&chunk.filepath)
+            .arg("language")
+            .arg(chunk.language.as_str())
+            .arg("node_type")
+            .arg(&chunk.node_type)
+            .arg("name")
+            .arg(&chunk.name)
+            .arg("signature")
+            .arg(&chunk.signature)
+            .arg("content")
+            .arg(&chunk.content)
+            .arg("start_line")
+            .arg(chunk.start_line as i64)
+            .arg("end_line")
+            .arg(chunk.end_line as i64)
+            .arg("embedding")
+            .arg(&embedding_bytes);
 
         if let Some(ref parent_ctx) = chunk.parent_context {
             cmd.arg("parent_context").arg(parent_ctx);
@@ -149,16 +161,26 @@ impl Storage {
             let pipe_cmd = pipe.cmd("HSET");
             pipe_cmd
                 .arg(&key)
-                .arg("chunk_id").arg(&chunk.chunk_id)
-                .arg("filepath").arg(&chunk.filepath)
-                .arg("language").arg(chunk.language.as_str())
-                .arg("node_type").arg(&chunk.node_type)
-                .arg("name").arg(&chunk.name)
-                .arg("signature").arg(&chunk.signature)
-                .arg("content").arg(&chunk.content)
-                .arg("start_line").arg(chunk.start_line as i64)
-                .arg("end_line").arg(chunk.end_line as i64)
-                .arg("embedding").arg(&embedding_bytes);
+                .arg("chunk_id")
+                .arg(&chunk.chunk_id)
+                .arg("filepath")
+                .arg(&chunk.filepath)
+                .arg("language")
+                .arg(chunk.language.as_str())
+                .arg("node_type")
+                .arg(&chunk.node_type)
+                .arg("name")
+                .arg(&chunk.name)
+                .arg("signature")
+                .arg(&chunk.signature)
+                .arg("content")
+                .arg(&chunk.content)
+                .arg("start_line")
+                .arg(chunk.start_line as i64)
+                .arg("end_line")
+                .arg(chunk.end_line as i64)
+                .arg("embedding")
+                .arg(&embedding_bytes);
 
             if let Some(ref parent_ctx) = chunk.parent_context {
                 pipe_cmd.arg("parent_context").arg(parent_ctx);
@@ -189,7 +211,10 @@ impl Storage {
         let query_str = if effective_query.is_empty() {
             match language {
                 Some(lang) => {
-                    format!("@language:{{{}}}=>[KNN {top_k} @embedding $query_vec AS vector_score]", lang.as_str())
+                    format!(
+                        "@language:{{{}}}=>[KNN {top_k} @embedding $query_vec AS vector_score]",
+                        lang.as_str()
+                    )
                 }
                 None => {
                     format!("*=>[KNN {top_k} @embedding $query_vec AS vector_score]")
@@ -437,17 +462,28 @@ impl Storage {
 
         let mut cmd = cmd("HSET");
         cmd.arg(&key)
-            .arg("chunk_id").arg(&chunk.chunk_id)
-            .arg("filepath").arg(&chunk.filepath)
-            .arg("language").arg(chunk.language.as_str())
-            .arg("node_type").arg(&chunk.node_type)
-            .arg("name").arg(&chunk.name)
-            .arg("signature").arg(&chunk.signature)
-            .arg("content").arg(&chunk.content)
-            .arg("start_line").arg(chunk.start_line as i64)
-            .arg("end_line").arg(chunk.end_line as i64)
-            .arg("embedding").arg(&embedding_bytes)
-            .arg("mtime").arg(mtime);
+            .arg("chunk_id")
+            .arg(&chunk.chunk_id)
+            .arg("filepath")
+            .arg(&chunk.filepath)
+            .arg("language")
+            .arg(chunk.language.as_str())
+            .arg("node_type")
+            .arg(&chunk.node_type)
+            .arg("name")
+            .arg(&chunk.name)
+            .arg("signature")
+            .arg(&chunk.signature)
+            .arg("content")
+            .arg(&chunk.content)
+            .arg("start_line")
+            .arg(chunk.start_line as i64)
+            .arg("end_line")
+            .arg(chunk.end_line as i64)
+            .arg("embedding")
+            .arg(&embedding_bytes)
+            .arg("mtime")
+            .arg(mtime);
 
         if let Some(ref parent_ctx) = chunk.parent_context {
             cmd.arg("parent_context").arg(parent_ctx);
@@ -455,6 +491,251 @@ impl Storage {
 
         cmd.query_async::<redis::Value>(&mut conn).await?;
         Ok(())
+    }
+
+    pub async fn ensure_shadow_index(&self) -> anyhow::Result<()> {
+        let mut conn = self.connection().await?;
+
+        if self.shadow_index_exists(&mut conn).await? {
+            info!("Shadow index {SHADOW_INDEX_NAME} already exists, skipping creation");
+            return Ok(());
+        }
+
+        info!("Creating shadow index {SHADOW_INDEX_NAME}");
+        let result: redis::RedisResult<redis::Value> = cmd("FT.CREATE")
+            .arg(SHADOW_INDEX_NAME)
+            .arg("ON")
+            .arg("HASH")
+            .arg("PREFIX")
+            .arg(1)
+            .arg(SHADOW_KEY_PREFIX)
+            .arg("SCHEMA")
+            .arg("chunk_id")
+            .arg("TAG")
+            .arg("filepath")
+            .arg("TEXT")
+            .arg("language")
+            .arg("TAG")
+            .arg("node_type")
+            .arg("TAG")
+            .arg("name")
+            .arg("TEXT")
+            .arg("signature")
+            .arg("TEXT")
+            .arg("content")
+            .arg("TEXT")
+            .arg("start_line")
+            .arg("NUMERIC")
+            .arg("end_line")
+            .arg("NUMERIC")
+            .arg("parent_context")
+            .arg("TEXT")
+            .arg("embedding")
+            .arg("VECTOR")
+            .arg("FLAT")
+            .arg(6)
+            .arg("TYPE")
+            .arg("FLOAT32")
+            .arg("DIM")
+            .arg(384)
+            .arg("DISTANCE_METRIC")
+            .arg("COSINE")
+            .query_async(&mut conn)
+            .await;
+
+        match result {
+            Ok(_) => {
+                info!("Shadow index {SHADOW_INDEX_NAME} created successfully");
+                Ok(())
+            }
+            Err(e) if e.to_string().contains("Index already exists") => {
+                debug!("Shadow index {SHADOW_INDEX_NAME} already exists (race condition)");
+                Ok(())
+            }
+            Err(e) => Err(KtError::Redis(e).into()),
+        }
+    }
+
+    async fn shadow_index_exists(
+        &self,
+        conn: &mut redis::aio::MultiplexedConnection,
+    ) -> anyhow::Result<bool> {
+        let result: redis::RedisResult<redis::Value> = cmd("FT.INFO")
+            .arg(SHADOW_INDEX_NAME)
+            .query_async(conn)
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("Unknown Index name") || msg.contains("not found") {
+                    Ok(false)
+                } else {
+                    Err(KtError::Redis(e).into())
+                }
+            }
+        }
+    }
+
+    pub async fn store_shadow_chunks_batch(
+        &self,
+        chunks: &[Chunk],
+        embeddings: &[Vec<f32>],
+        ttl_seconds: u64,
+    ) -> anyhow::Result<()> {
+        let mut conn = self.connection().await?;
+        let mut pipe = redis::pipe();
+
+        for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
+            let key = format!("{SHADOW_KEY_PREFIX}{}", chunk.chunk_id);
+            let embedding_bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+
+            let pipe_cmd = pipe.cmd("HSET");
+            pipe_cmd
+                .arg(&key)
+                .arg("chunk_id")
+                .arg(&chunk.chunk_id)
+                .arg("filepath")
+                .arg(&chunk.filepath)
+                .arg("language")
+                .arg(chunk.language.as_str())
+                .arg("node_type")
+                .arg(&chunk.node_type)
+                .arg("name")
+                .arg(&chunk.name)
+                .arg("signature")
+                .arg(&chunk.signature)
+                .arg("content")
+                .arg(&chunk.content)
+                .arg("start_line")
+                .arg(chunk.start_line as i64)
+                .arg("end_line")
+                .arg(chunk.end_line as i64)
+                .arg("embedding")
+                .arg(&embedding_bytes);
+
+            if let Some(ref parent_ctx) = chunk.parent_context {
+                pipe_cmd.arg("parent_context").arg(parent_ctx);
+            }
+
+            pipe_cmd.ignore();
+
+            pipe.cmd("EXPIRE").arg(&key).arg(ttl_seconds).ignore();
+        }
+
+        pipe.query_async::<redis::Value>(&mut conn).await?;
+        info!(
+            "Stored {} shadow chunks with TTL {}s",
+            chunks.len(),
+            ttl_seconds
+        );
+        Ok(())
+    }
+
+    pub async fn search_shadow(
+        &self,
+        query_embedding: &[f32],
+        query_text: &str,
+        language: Option<&Language>,
+        top_k: usize,
+    ) -> anyhow::Result<Vec<SearchResult>> {
+        let mut conn = self.connection().await?;
+        let embedding_bytes: Vec<u8> = query_embedding
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+
+        let effective_query = query_text.trim();
+        let query_str = if effective_query.is_empty() {
+            match language {
+                Some(lang) => {
+                    format!(
+                        "@language:{{{}}}=>[KNN {top_k} @embedding $query_vec AS vector_score]",
+                        lang.as_str()
+                    )
+                }
+                None => {
+                    format!("*=>[KNN {top_k} @embedding $query_vec AS vector_score]")
+                }
+            }
+        } else {
+            match language {
+                Some(lang) => {
+                    format!(
+                        "(@language:{{{}}} ({}))=>[KNN {} @embedding $query_vec AS vector_score]",
+                        lang.as_str(),
+                        escape_fts_query(effective_query),
+                        top_k
+                    )
+                }
+                None => {
+                    format!(
+                        "({})=>[KNN {} @embedding $query_vec AS vector_score]",
+                        escape_fts_query(effective_query),
+                        top_k
+                    )
+                }
+            }
+        };
+
+        debug!("Shadow search query: {}", query_str);
+
+        let result: redis::Value = cmd("FT.SEARCH")
+            .arg(SHADOW_INDEX_NAME)
+            .arg(&query_str)
+            .arg("PARAMS")
+            .arg(2)
+            .arg("query_vec")
+            .arg(&embedding_bytes)
+            .arg("DIALECT")
+            .arg(2)
+            .arg("SORTBY")
+            .arg("vector_score")
+            .arg("ASC")
+            .arg("LIMIT")
+            .arg(0)
+            .arg(top_k)
+            .query_async(&mut conn)
+            .await?;
+
+        parse_search_results(result)
+    }
+
+    pub async fn read_shadow_file_chunks(
+        &self,
+        filepath: &str,
+    ) -> anyhow::Result<Vec<SearchResult>> {
+        if filepath.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut conn = self.connection().await?;
+
+        let query_str = format!("@filepath:\"{}\"", escape_exact_match(filepath));
+        debug!("Reading shadow file chunks: {}", query_str);
+
+        let result: redis::Value = cmd("FT.SEARCH")
+            .arg(SHADOW_INDEX_NAME)
+            .arg(&query_str)
+            .arg("DIALECT")
+            .arg(2)
+            .arg("LIMIT")
+            .arg(0)
+            .arg(1000)
+            .arg("RETURN")
+            .arg(8)
+            .arg("chunk_id")
+            .arg("filepath")
+            .arg("language")
+            .arg("node_type")
+            .arg("name")
+            .arg("signature")
+            .arg("content")
+            .arg("parent_context")
+            .query_async(&mut conn)
+            .await?;
+
+        parse_search_results(result)
     }
 }
 
@@ -571,7 +852,10 @@ fn escape_fts_query(query: &str) -> String {
         }
     }
     if result.is_empty() {
-        warn!("FTS query collapsed to empty after escaping, falling back to wildcard: {:?}", query);
+        warn!(
+            "FTS query collapsed to empty after escaping, falling back to wildcard: {:?}",
+            query
+        );
         result = "*".to_string();
     }
     result

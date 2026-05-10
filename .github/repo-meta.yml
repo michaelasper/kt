@@ -1,0 +1,15 @@
+description: >
+  Search and retrieve local Rust, Go, and Java code with semantic awareness for AI-assisted development using a local MCP workflow.
+topics:
+  - cli
+  - developer-tools
+  - rust
+  - code-indexing
+  - code-search
+  - mcp
+  - redis
+  - vector-search
+  - code-intelligence
+  - tree-sitter
+  - ai-agents
+homepage: ""

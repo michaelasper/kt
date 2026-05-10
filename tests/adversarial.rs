@@ -24,7 +24,9 @@ async fn test_empty_query() {
 #[tokio::test]
 async fn test_whitespace_only_query() {
     let storage = make_storage().await;
-    let result = storage.hybrid_search(&vec![0.0f32; 384], "   \t\n  ", None, 3).await;
+    let result = storage
+        .hybrid_search(&vec![0.0f32; 384], "   \t\n  ", None, 3)
+        .await;
     match result {
         Ok(results) => eprintln!("PASS: whitespace query returned {} results", results.len()),
         Err(e) => panic!("FAIL: whitespace query crashed: {e}"),
@@ -34,7 +36,9 @@ async fn test_whitespace_only_query() {
 #[tokio::test]
 async fn test_zero_top_k() {
     let storage = make_storage().await;
-    let result = storage.hybrid_search(&vec![0.0f32; 384], "function", None, 0).await;
+    let result = storage
+        .hybrid_search(&vec![0.0f32; 384], "function", None, 0)
+        .await;
     match result {
         Ok(results) => {
             assert!(results.is_empty(), "top_k=0 should return empty results");
@@ -47,7 +51,9 @@ async fn test_zero_top_k() {
 #[tokio::test]
 async fn test_huge_top_k() {
     let storage = make_storage().await;
-    let result = storage.hybrid_search(&vec![0.0f32; 384], "function", None, 10000).await;
+    let result = storage
+        .hybrid_search(&vec![0.0f32; 384], "function", None, 10000)
+        .await;
     match result {
         Ok(results) => eprintln!("PASS: huge top_k returned {} results", results.len()),
         Err(e) => panic!("FAIL: huge top_k crashed: {e}"),
@@ -81,9 +87,16 @@ async fn test_special_chars_in_query() {
         match result {
             Ok(results) => {
                 let display = &q[..q.len().min(40)];
-                eprintln!("PASS: special char query {:?} returned {} results", display, results.len());
+                eprintln!(
+                    "PASS: special char query {:?} returned {} results",
+                    display,
+                    results.len()
+                );
             }
-            Err(e) => panic!("FAIL: special char query {:?} crashed: {e}", &q[..q.len().min(40)]),
+            Err(e) => panic!(
+                "FAIL: special char query {:?} crashed: {e}",
+                &q[..q.len().min(40)]
+            ),
         }
     }
 }
@@ -113,7 +126,11 @@ async fn test_read_path_traversal() {
         let result = storage.read_file_chunks(path).await;
         match result {
             Ok(results) => {
-                assert!(results.is_empty(), "path traversal {:?} should return empty", path);
+                assert!(
+                    results.is_empty(),
+                    "path traversal {:?} should return empty",
+                    path
+                );
                 eprintln!("PASS: path traversal {:?} returned empty (safe)", path);
             }
             Err(e) => panic!("FAIL: path traversal {:?} crashed: {e}", path),
@@ -153,9 +170,16 @@ async fn test_language_filter() {
     match result {
         Ok(results) => {
             for r in &results {
-                assert_eq!(r.language, kt::Language::Rust, "language filter should work");
+                assert_eq!(
+                    r.language,
+                    kt::Language::Rust,
+                    "language filter should work"
+                );
             }
-            eprintln!("PASS: language filter returned {} rust results", results.len());
+            eprintln!(
+                "PASS: language filter returned {} rust results",
+                results.len()
+            );
         }
         Err(e) => panic!("FAIL: language filter crashed: {e}"),
     }
@@ -165,7 +189,9 @@ async fn test_language_filter() {
 async fn test_long_query() {
     let storage = make_storage().await;
     let long_query = "x".repeat(100_000);
-    let result = storage.hybrid_search(&vec![0.0f32; 384], &long_query, None, 3).await;
+    let result = storage
+        .hybrid_search(&vec![0.0f32; 384], &long_query, None, 3)
+        .await;
     match result {
         Ok(results) => eprintln!("PASS: 100k char query returned {} results", results.len()),
         Err(e) => panic!("FAIL: 100k char query crashed: {e}"),
@@ -186,7 +212,9 @@ async fn test_long_filepath() {
 #[tokio::test]
 async fn test_remove_nonexistent_file() {
     let storage = make_storage().await;
-    let result = storage.remove_file_chunks("this_file_does_not_exist.rs").await;
+    let result = storage
+        .remove_file_chunks("this_file_does_not_exist.rs")
+        .await;
     match result {
         Ok(count) => {
             assert_eq!(count, 0, "removing nonexistent file should return 0");
@@ -208,7 +236,11 @@ async fn test_unicode_query() {
     for q in unicode_queries {
         let result = storage.hybrid_search(&vec![0.0f32; 384], q, None, 3).await;
         match result {
-            Ok(results) => eprintln!("PASS: unicode query {:?} returned {} results", q, results.len()),
+            Ok(results) => eprintln!(
+                "PASS: unicode query {:?} returned {} results",
+                q,
+                results.len()
+            ),
             Err(e) => panic!("FAIL: unicode query {:?} crashed: {e}", q),
         }
     }
@@ -219,7 +251,10 @@ async fn test_newlines_in_filepath() {
     let storage = make_storage().await;
     let result = storage.read_file_chunks("src/lib.rs\nmalicious").await;
     match result {
-        Ok(results) => eprintln!("PASS: newline in filepath returned {} results", results.len()),
+        Ok(results) => eprintln!(
+            "PASS: newline in filepath returned {} results",
+            results.len()
+        ),
         Err(e) => panic!("FAIL: newline in filepath crashed: {e}"),
     }
 }

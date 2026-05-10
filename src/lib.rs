@@ -2,6 +2,7 @@ pub mod config;
 pub mod discovery;
 pub mod embedding;
 pub mod error;
+pub mod git;
 pub mod indexing;
 pub mod mcp;
 pub mod storage;
