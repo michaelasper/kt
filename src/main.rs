@@ -92,7 +92,11 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_sync(config: &kt::config::Config, directory: &std::path::Path, full: bool) -> anyhow::Result<()> {
+async fn run_sync(
+    config: &kt::config::Config,
+    directory: &std::path::Path,
+    full: bool,
+) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -148,9 +152,15 @@ async fn run_sync(config: &kt::config::Config, directory: &std::path::Path, full
                             Ok(changed_paths) => {
                                 for path in &changed_paths {
                                     if !directory.join(path).exists() {
-                                        tracing::info!("Removing deleted file from index: {}", path);
+                                        tracing::info!(
+                                            "Removing deleted file from index: {}",
+                                            path
+                                        );
                                         if let Err(e) = storage.remove_file_chunks(path).await {
-                                            tracing::warn!("Failed to remove chunks for deleted file {}: {e}", path);
+                                            tracing::warn!(
+                                                "Failed to remove chunks for deleted file {}: {e}",
+                                                path
+                                            );
                                         }
                                     }
                                 }
@@ -169,7 +179,10 @@ async fn run_sync(config: &kt::config::Config, directory: &std::path::Path, full
                                     return Ok(());
                                 }
 
-                                tracing::info!("Found {} changed files to index", changed_files.len());
+                                tracing::info!(
+                                    "Found {} changed files to index",
+                                    changed_files.len()
+                                );
                                 changed_files
                             }
                             Err(e) => {
@@ -229,16 +242,12 @@ async fn run_sync(config: &kt::config::Config, directory: &std::path::Path, full
     if !full {
         if let Ok(git_info) = kt::git::get_git_info(directory) {
             if let Some(commit) = git_info.commit_sha {
-                storage
-                    .set_last_synced_commit(dir_str, &commit)
-                    .await?;
+                storage.set_last_synced_commit(dir_str, &commit).await?;
                 tracing::debug!("Updated last synced commit to {}", &commit[..8]);
             }
         }
     } else {
-        storage
-            .clear_sync_state(dir_str)
-            .await?;
+        storage.clear_sync_state(dir_str).await?;
         tracing::debug!("Cleared sync state after full sync");
     }
 
@@ -309,13 +318,19 @@ async fn run_mcp_action(action: McpAction, _config: &kt::config::Config) -> anyh
             global_manager.show_config()?;
         }
         McpAction::Remove { harness: _ } => {
-            println!("{}", console::style("⚠ Remove feature not yet implemented").yellow());
+            println!(
+                "{}",
+                console::style("⚠ Remove feature not yet implemented").yellow()
+            );
             println!("To manually remove kt from a harness config:");
             println!("  1. Open the config file");
             println!("  2. Remove the \"kt\" entry from mcpServers");
             println!("  3. Save the file");
             println!();
-            println!("Run {} to see config locations", console::style("kt mcp list").cyan());
+            println!(
+                "Run {} to see config locations",
+                console::style("kt mcp list").cyan()
+            );
         }
     }
 

@@ -452,10 +452,7 @@ impl Storage {
         Ok(mtimes)
     }
 
-    pub async fn get_last_synced_commit(
-        &self,
-        directory: &str,
-    ) -> anyhow::Result<Option<String>> {
+    pub async fn get_last_synced_commit(&self, directory: &str) -> anyhow::Result<Option<String>> {
         let mut conn = self.connection().await?;
         let key = format!("{}{}", SYNC_STATE_PREFIX, directory);
 

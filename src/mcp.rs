@@ -207,7 +207,10 @@ impl KtServer {
         }
 
         let full = params.full.unwrap_or(false);
-        info!("Starting sync for {} (full: {})", params.directory_path, full);
+        info!(
+            "Starting sync for {} (full: {})",
+            params.directory_path, full
+        );
 
         let files = if full {
             info!("Full sync requested");
@@ -253,7 +256,10 @@ impl KtServer {
                                 if !root.join(path).exists() {
                                     info!("Removing deleted file from index: {}", path);
                                     if let Err(e) = storage.remove_file_chunks(path).await {
-                                        warn!("Failed to remove chunks for deleted file {}: {e}", path);
+                                        warn!(
+                                            "Failed to remove chunks for deleted file {}: {e}",
+                                            path
+                                        );
                                     }
                                 }
                             }
@@ -269,7 +275,8 @@ impl KtServer {
 
                             if changed_files.is_empty() {
                                 return Ok(CallToolResult::success(vec![Content::text(
-                                    "<result>No supported files in changed set</result>".to_string(),
+                                    "<result>No supported files in changed set</result>"
+                                        .to_string(),
                                 )]));
                             }
 
@@ -352,10 +359,7 @@ impl KtServer {
                 }
             }
         } else {
-            if let Err(e) = storage
-                .clear_sync_state(&params.directory_path)
-                .await
-            {
+            if let Err(e) = storage.clear_sync_state(&params.directory_path).await {
                 warn!("Failed to clear sync state: {e}");
             }
         }
