@@ -319,11 +319,39 @@ impl Upgrader {
             std::env::current_exe().context("Failed to get current executable path")?;
 
         debug!("Current executable: {:?}", current_exe);
-        debug!("Downloaded binary: {:?}", download_path);
+        debug!("Downloaded archive: {:?}", download_path);
 
-        fs::set_permissions(download_path, fs::Permissions::from_mode(0o755))?;
+        let extracted_binary = if download_path.extension().is_some_and(|e| e == "gz") {
+            let tmp_dir = std::env::temp_dir();
+            let output = std::process::Command::new("tar")
+                .arg("xzf")
+                .arg(download_path)
+                .arg("-C")
+                .arg(&tmp_dir)
+                .arg("kt")
+                .output()
+                .context("Failed to extract tar.gz archive")?;
 
-        self_replace::self_replace(download_path)?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(anyhow::anyhow!("tar extraction failed: {}", stderr));
+            }
+
+            let binary_path = tmp_dir.join("kt");
+            if !binary_path.exists() {
+                return Err(anyhow::anyhow!(
+                    "Extracted binary not found at {:?}",
+                    binary_path
+                ));
+            }
+            binary_path
+        } else {
+            download_path.clone()
+        };
+
+        fs::set_permissions(&extracted_binary, fs::Permissions::from_mode(0o755))?;
+
+        self_replace::self_replace(&extracted_binary)?;
 
         Ok(())
     }
