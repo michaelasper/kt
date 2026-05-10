@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.1.6 (2026-05-10)</small>
+
+* fix: handle 'no such index' error from newer Redis/RediSearch ([cdd1841](https://github.com/michaelasper/kt/commit/cdd1841))
+* style: run cargo fmt ([9693efa](https://github.com/michaelasper/kt/commit/9693efa))
+
 ## <small>0.1.5 (2026-05-10)</small>
 
 * fix: handle RediSearch 'Index: already exists' error variant ([dab13fe](https://github.com/michaelasper/kt/commit/dab13fe))
