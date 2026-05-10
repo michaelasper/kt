@@ -17,7 +17,15 @@
         "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
       }
     ],
-    "@semantic-release/github"
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          { "path": "kt-linux-amd64.tar.gz", "label": "kt-linux-amd64" },
+          { "path": "kt-darwin-arm64.tar.gz", "label": "kt-darwin-arm64" }
+        ]
+      }
+    ]
   ],
   "preset": "conventionalcommits"
 }

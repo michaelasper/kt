@@ -53,7 +53,7 @@ jobs:
           GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
         run: |
           set +e
-          npx semantic-release \
+          npx semantic-release --dry-run \
             --branches main \
             --preset conventionalcommits > /tmp/sr-output.log 2>&1
           exit_code=$?
@@ -61,7 +61,7 @@ jobs:
 
           cat /tmp/sr-output.log
 
-          if grep -q "Published release" /tmp/sr-output.log || grep -q "The next release version is" /tmp/sr-output.log; then
+          if grep -q "The next release version is" /tmp/sr-output.log; then
             version=$(grep -oP 'The next release version is \K[0-9.]+' /tmp/sr-output.log)
             echo "release_published=true" >> "$GITHUB_OUTPUT"
             echo "new_release_version=$version" >> "$GITHUB_OUTPUT"
@@ -145,6 +145,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download Linux artifact
         uses: actions/download-artifact@v4
         with:
@@ -155,13 +160,27 @@ jobs:
         with:
           name: kt-darwin-arm64
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          tag_name: v${{ needs.prepare.outputs.new_release_version }}
-          generate_release_notes: true
-          files: |
-            kt-linux-amd64.tar.gz
-            kt-darwin-arm64.tar.gz
+          node-version: '22'
+
+      - name: Install semantic-release dependencies
+        run: |
+          npm install -g \
+            semantic-release@24 \
+            @semantic-release/commit-analyzer@13 \
+            @semantic-release/release-notes-generator@14 \
+            @semantic-release/changelog@6 \
+            @semantic-release/git@10 \
+            @semantic-release/github@11 \
+            conventional-changelog-conventionalcommits@7
+
+      - name: Run semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
+        run: npx semantic-release
