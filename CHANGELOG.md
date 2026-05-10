@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.1.4 (2026-05-10)</small>
+
+* fix: graceful fallback to full sync when stored commit missing, fix upgrade asset pattern ([107b37a](https://github.com/michaelasper/kt/commit/107b37a))
+
 ## <small>0.1.3 (2026-05-10)</small>
 
 * fix: strip v prefix from GitHub tag before semver parse ([58f41a4](https://github.com/michaelasper/kt/commit/58f41a4))
