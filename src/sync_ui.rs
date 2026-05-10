@@ -124,6 +124,7 @@ impl PrettySyncUI {
         self.chunks_bar.set_position(0);
         self.target_bar
             .set_prefix(format!(" TARGET {}/{}", file_index + 1, self.total_files));
+        self.target_bar.tick();
     }
 
     fn finish_file(&mut self, _path: &str, chunks: usize) {
@@ -161,6 +162,7 @@ fn rain_loop(rx: mpsc::Receiver<()>, bars: Vec<ProgressBar>) {
         }
 
         bars[0].set_message("           ↓  ↓  ↓  ↓  ↓");
+        bars[0].tick();
 
         for bar in bars.iter().skip(1) {
             let mut bits = String::with_capacity(20);
@@ -178,6 +180,7 @@ fn rain_loop(rx: mpsc::Receiver<()>, bars: Vec<ProgressBar>) {
                 }
             }
             bar.set_message(bits);
+            bar.tick();
         }
 
         std::thread::sleep(Duration::from_millis(100));
