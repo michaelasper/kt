@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.2.1 (2026-05-10)</small>
+
+* fix: eliminate release race condition and correct binary version ([3be481d](https://github.com/michaelasper/kt/commit/3be481d))
+
 ## 0.2.0 (2026-05-10)
 
 * feat: cyberpunk data shredder sync UI with hex rain animation ([890ab56](https://github.com/michaelasper/kt/commit/890ab56))
