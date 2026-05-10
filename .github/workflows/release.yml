@@ -14,8 +14,8 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Release
+  prepare:
+    name: Prepare
     runs-on: ubuntu-latest
     outputs:
       release_published: ${{ steps.semantic.outputs.release_published }}
@@ -33,11 +33,6 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
-
       - name: Install semantic-release dependencies
         run: |
           npm install -g \
@@ -46,10 +41,9 @@ jobs:
             @semantic-release/release-notes-generator@14 \
             @semantic-release/changelog@6 \
             @semantic-release/git@10 \
-            @semantic-release/github@11 \
             conventional-changelog-conventionalcommits@7
 
-      - name: Run semantic-release
+      - name: Run semantic-release (version detection only)
         id: semantic
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -62,44 +56,56 @@ jobs:
           npx semantic-release \
             --branches main \
             --preset conventionalcommits > /tmp/sr-output.log 2>&1
+          exit_code=$?
           set -e
 
           cat /tmp/sr-output.log
 
-          if grep -q "Published release" /tmp/sr-output.log; then
+          if grep -q "Published release" /tmp/sr-output.log || grep -q "The next release version is" /tmp/sr-output.log; then
             version=$(grep -oP 'The next release version is \K[0-9.]+' /tmp/sr-output.log)
             echo "release_published=true" >> "$GITHUB_OUTPUT"
             echo "new_release_version=$version" >> "$GITHUB_OUTPUT"
-            echo "Release published: v$version"
+            echo "Version detected: v$version"
           else
             echo "release_published=false" >> "$GITHUB_OUTPUT"
-            echo "No release published"
+            echo "No release needed"
           fi
 
-      - name: Build Linux binary
-        if: steps.semantic.outputs.release_published == 'true'
+  build-linux:
+    name: Build Linux
+    needs: prepare
+    if: needs.prepare.outputs.release_published == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Build release binary
+        env:
+          VERSION: ${{ needs.prepare.outputs.new_release_version }}
         run: |
-          version="${{ steps.semantic.outputs.new_release_version }}"
-          sed -i "s/^version = \".*\"/version = \"$version\"/" Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
           cargo build --release --target x86_64-unknown-linux-gnu
           cd target/x86_64-unknown-linux-gnu/release
           tar czf ../../../kt-linux-amd64.tar.gz kt
           cd -
 
-      - name: Upload release assets
-        if: steps.semantic.outputs.release_published == 'true'
-        uses: softprops/action-gh-release@v2
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          files: kt-linux-amd64.tar.gz
-          tag_name: v${{ steps.semantic.outputs.new_release_version }}
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: kt-linux-amd64
+          path: kt-linux-amd64.tar.gz
 
   build-macos:
     name: Build macOS
-    needs: release
-    if: needs.release.outputs.release_published == 'true'
+    needs: prepare
+    if: needs.prepare.outputs.release_published == 'true'
     runs-on: macos-latest
 
     steps:
@@ -118,18 +124,44 @@ jobs:
 
       - name: Build release binary
         env:
-          RELEASE_VERSION: ${{ needs.release.outputs.new_release_version }}
+          VERSION: ${{ needs.prepare.outputs.new_release_version }}
         run: |
-          sed -i '' "s/^version = \".*\"/version = \"$RELEASE_VERSION\"/" Cargo.toml
+          sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
           cargo build --release --target aarch64-apple-darwin
           cd target/aarch64-apple-darwin/release
           tar czf ../../../kt-darwin-arm64.tar.gz kt
           cd -
 
-      - name: Upload release asset
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kt-darwin-arm64
+          path: kt-darwin-arm64.tar.gz
+
+  publish:
+    name: Publish Release
+    needs: [prepare, build-linux, build-macos]
+    if: needs.prepare.outputs.release_published == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kt-linux-amd64
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kt-darwin-arm64
+
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: kt-darwin-arm64.tar.gz
-          tag_name: v${{ needs.release.outputs.new_release_version }}
+          tag_name: v${{ needs.prepare.outputs.new_release_version }}
+          generate_release_notes: true
+          files: |
+            kt-linux-amd64.tar.gz
+            kt-darwin-arm64.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
