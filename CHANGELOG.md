@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.1.8 (2026-05-10)</small>
+
+* fix: capture semantic-release output reliably for GITHUB_OUTPUT ([c1a9302](https://github.com/michaelasper/kt/commit/c1a9302))
+
 ## <small>0.1.7 (2026-05-10)</small>
 
 * fix: set release_published output so build-release job runs ([310e17c](https://github.com/michaelasper/kt/commit/310e17c))
