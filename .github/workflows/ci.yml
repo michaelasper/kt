@@ -33,7 +33,10 @@ jobs:
 
       - name: Start Redis (macOS)
         if: runner.os == 'macOS'
-        run: brew install redis && brew services start redis
+        run: |
+          brew install openssl redis
+          brew services start redis
+          echo "OPENSSL_DIR=$(brew --prefix openssl)" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -102,7 +105,9 @@ jobs:
 
       - name: Install OpenSSL (macOS)
         if: runner.os == 'macOS'
-        run: brew install openssl
+        run: |
+          brew install openssl
+          echo "OPENSSL_DIR=$(brew --prefix openssl)" >> "$GITHUB_ENV"
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}

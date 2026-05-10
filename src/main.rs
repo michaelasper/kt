@@ -227,7 +227,7 @@ async fn run_sync(config: &kt::config::Config, directory: &std::path::Path, full
         .ok_or_else(|| anyhow::anyhow!("Invalid UTF-8 in directory path"))?;
 
     if !full {
-        if let Some(git_info) = kt::git::get_git_info(directory).ok() {
+        if let Ok(git_info) = kt::git::get_git_info(directory) {
             if let Some(commit) = git_info.commit_sha {
                 storage
                     .set_last_synced_commit(dir_str, &commit)
