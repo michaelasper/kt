@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.1.7 (2026-05-10)</small>
+
+* fix: set release_published output so build-release job runs ([310e17c](https://github.com/michaelasper/kt/commit/310e17c))
+
 ## <small>0.1.6 (2026-05-10)</small>
 
 * fix: handle 'no such index' error from newer Redis/RediSearch ([cdd1841](https://github.com/michaelasper/kt/commit/cdd1841))
