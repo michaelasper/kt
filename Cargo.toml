@@ -26,6 +26,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
+tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ndarray = "0.16"
 hex = "0.4"

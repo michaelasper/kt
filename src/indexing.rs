@@ -18,11 +18,14 @@ pub fn parse_file(path: &Path, relative_path: &str, language: Language) -> Vec<C
 
     let config = LanguageConfig::for_language(language);
     let mut parser = Parser::new();
-    parser
-        .set_language(&config.tree_sitter_language())
-        .unwrap_or_else(|e| {
-            panic!("Failed to set language for {:?}: {e}", language);
-        });
+    if let Err(e) = parser.set_language(&config.tree_sitter_language()) {
+        warn!(
+            "Failed to set language for {:?}: {e}. Skipping file: {}",
+            language,
+            path.display()
+        );
+        return Vec::new();
+    }
 
     match parser.parse(&source, None) {
         Some(tree) => extract_chunks(&tree, &source, relative_path, language, &config),
@@ -353,5 +356,18 @@ impl Foo {
         let chunks = fallback_line_chunks(source, "test.rs", Language::Rust);
         assert!(!chunks.is_empty());
         assert_eq!(chunks[0].node_type, "text_block");
+    }
+
+    #[test]
+    fn test_parse_file_handles_read_errors() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("nonexistent.rs");
+
+        let chunks = parse_file(&file_path, "nonexistent.rs", Language::Rust);
+
+        assert!(
+            chunks.is_empty(),
+            "Should return empty Vec on file read error"
+        );
     }
 }
