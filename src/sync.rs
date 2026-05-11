@@ -230,6 +230,15 @@ pub async fn finalize(
         SyncStrategy::Full => {
             storage.clear_sync_state(dir_str).await?;
             tracing::debug!("Cleared sync state after full sync");
+            if let Ok(git_info) = git::get_git_info(root) {
+                if let Some(commit) = git_info.commit_sha {
+                    storage.set_last_synced_commit(dir_str, &commit).await?;
+                    tracing::debug!(
+                        "Saved last synced commit after full sync to {}",
+                        &commit[..8]
+                    );
+                }
+            }
         }
         SyncStrategy::PartialGit { .. } => {
             if let Ok(git_info) = git::get_git_info(root) {
