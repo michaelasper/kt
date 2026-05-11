@@ -103,8 +103,8 @@ async fn run_sync(
     let default_level = if is_tty { "kt=warn" } else { "kt=info" };
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         tracing_subscriber::EnvFilter::default()
-            .add_directive(default_level.parse().unwrap())
-            .add_directive("ort=warn".parse().unwrap())
+            .add_directive(default_level.parse().expect("Failed to parse default_level tracing directive"))
+            .add_directive("ort=warn".parse().expect("Failed to parse ort=warn tracing directive"))
     });
 
     tracing_subscriber::fmt().with_env_filter(filter).init();
