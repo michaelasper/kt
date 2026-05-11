@@ -124,6 +124,12 @@ jobs:
           path: target
           key: macos-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Cache cargo bin
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin
+          key: macos-cargo-bin-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Run cargo check
         run: cargo check --all-targets --all-features
 
