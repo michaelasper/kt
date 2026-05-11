@@ -71,7 +71,7 @@ impl Chunk {
         hasher.update(b"\x00");
         hasher.update(name.as_bytes());
         hasher.update(b"\x00");
-        hasher.update(&start_line.to_be_bytes());
+        hasher.update(start_line.to_be_bytes());
         let result = hasher.finalize();
         hex::encode(result)
     }
