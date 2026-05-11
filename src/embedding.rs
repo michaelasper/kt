@@ -1,6 +1,7 @@
 use crate::{Config, KtError};
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Tensor;
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use tokenizers::Tokenizer;
 use tracing::{debug, info};
@@ -9,6 +10,10 @@ const MODEL_URL: &str =
     "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx";
 const TOKENIZER_URL: &str =
     "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json";
+const EXPECTED_MODEL_SHA256: &str =
+    "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452";
+const EXPECTED_TOKENIZER_SHA256: &str =
+    "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037";
 const EMBEDDING_DIM: usize = 384;
 const BATCH_SIZE: usize = 32;
 
@@ -89,8 +94,8 @@ impl EmbeddingEngine {
 
         if !model_path.exists() || !tokenizer_path.exists() {
             info!("Downloading embedding model files...");
-            download_file(MODEL_URL, &model_path).await?;
-            download_file(TOKENIZER_URL, &tokenizer_path).await?;
+            download_file(MODEL_URL, &model_path, EXPECTED_MODEL_SHA256).await?;
+            download_file(TOKENIZER_URL, &tokenizer_path, EXPECTED_TOKENIZER_SHA256).await?;
             info!("Model download complete");
         }
 
@@ -209,7 +214,7 @@ fn normalize(mut v: Vec<f32>) -> Vec<f32> {
     v
 }
 
-async fn download_file(url: &str, path: &Path) -> anyhow::Result<()> {
+async fn download_file(url: &str, path: &Path, expected_sha256: &str) -> anyhow::Result<()> {
     info!("Downloading {url}");
     let response = reqwest::get(url).await?;
 
@@ -224,9 +229,32 @@ async fn download_file(url: &str, path: &Path) -> anyhow::Result<()> {
     let bytes = response.bytes().await?;
     let tmp_path = path.with_extension("tmp");
     std::fs::write(&tmp_path, &bytes)?;
+
+    verify_sha256(&tmp_path, expected_sha256)?;
+
     std::fs::rename(&tmp_path, path)?;
 
     info!("Downloaded {} ({} bytes)", path.display(), bytes.len());
+    Ok(())
+}
+
+fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
+    let contents = std::fs::read(path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&contents);
+    let result = hasher.finalize();
+    let hex = format!("{:x}", result);
+
+    if hex != expected {
+        return Err(anyhow::anyhow!(
+            "SHA256 checksum mismatch for {}: expected {}, got {}",
+            path.display(),
+            expected,
+            hex
+        ));
+    }
+
+    debug!("SHA256 verified for {}: {}", path.display(), hex);
     Ok(())
 }
 

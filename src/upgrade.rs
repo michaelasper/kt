@@ -303,7 +303,23 @@ impl Upgrader {
             pb.set_position(downloaded);
         }
 
+        file.flush()?;
+
+        if downloaded != total_bytes {
+            return Err(UpgradeError::GitHubApi(format!(
+                "Download size mismatch: expected {} bytes, got {} bytes",
+                total_bytes, downloaded
+            ))
+            .into());
+        }
+
         pb.finish_with_message("Downloaded");
+
+        eprintln!(
+            "{} WARNING: Binary downloaded without SHA256 checksum verification.",
+            style("⚠").yellow()
+        );
+        eprintln!("  For production use, publish .sha256sum files with releases and verify before installation.");
 
         Ok(download_path)
     }
