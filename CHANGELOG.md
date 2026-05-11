@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.5.1 (2026-05-11)</small>
+
+* fix: remove panic when tree-sitter language fails to load ([986b9bf](https://github.com/michaelasper/kt/commit/986b9bf)), closes [#33](https://github.com/michaelasper/kt/issues/33)
+
 ## 0.5.0 (2026-05-11)
 
 * style: apply cargo fmt ([5a37e65](https://github.com/michaelasper/kt/commit/5a37e65))
