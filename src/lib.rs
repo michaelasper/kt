@@ -98,7 +98,10 @@ mod tests {
     fn generate_id_uniqueness() {
         let id_a = Chunk::generate_id("src/lib.rs", "new", 10);
         let id_b = Chunk::generate_id("src/lib.rs", "new", 20);
-        assert_ne!(id_a, id_b, "same filepath+name at different lines must produce different IDs");
+        assert_ne!(
+            id_a, id_b,
+            "same filepath+name at different lines must produce different IDs"
+        );
     }
 
     #[test]
@@ -112,13 +115,19 @@ mod tests {
     fn generate_id_separator_safety() {
         let id_a = Chunk::generate_id("fo", "obar", 1);
         let id_b = Chunk::generate_id("foob", "ar", 1);
-        assert_ne!(id_a, id_b, "boundary-crossing field values must produce different IDs");
+        assert_ne!(
+            id_a, id_b,
+            "boundary-crossing field values must produce different IDs"
+        );
     }
 
     #[test]
     fn generate_id_name_line_boundary_safety() {
         let id_a = Chunk::generate_id("a", "b1", 0);
         let id_b = Chunk::generate_id("a", "b", 10);
-        assert_ne!(id_a, id_b, "name/start_line boundary must be separator-safe");
+        assert_ne!(
+            id_a, id_b,
+            "name/start_line boundary must be separator-safe"
+        );
     }
 }
