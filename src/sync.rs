@@ -120,10 +120,7 @@ pub async fn plan(root: &Path, storage: &Storage, full: bool) -> anyhow::Result<
                         if changed_files.is_empty() {
                             tracing::info!("No supported files in changed set");
                         } else {
-                            tracing::info!(
-                                "Found {} changed files to index",
-                                changed_files.len()
-                            );
+                            tracing::info!("Found {} changed files to index", changed_files.len());
                         }
 
                         Ok(SyncPlan {
@@ -136,9 +133,7 @@ pub async fn plan(root: &Path, storage: &Storage, full: bool) -> anyhow::Result<
                         })
                     }
                     Err(e) => {
-                        tracing::warn!(
-                            "Failed to compute diff ({e}), falling back to full sync"
-                        );
+                        tracing::warn!("Failed to compute diff ({e}), falling back to full sync");
                         Ok(SyncPlan {
                             files: discovery::discover_files(root),
                             strategy: SyncStrategy::Full,

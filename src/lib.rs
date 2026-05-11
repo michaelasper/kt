@@ -8,8 +8,8 @@ pub mod indexing;
 pub mod mcp;
 pub mod mcp_setup;
 pub mod storage;
-pub mod sync_ui;
 pub mod sync;
+pub mod sync_ui;
 pub mod upgrade;
 
 pub use config::Config;

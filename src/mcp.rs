@@ -229,10 +229,9 @@ impl KtServer {
         }
 
         let mut progress = crate::sync::NoopProgress;
-        let stats =
-            crate::sync::execute(&plan, &storage, engine, &mut progress)
-                .await
-                .map_err(mcp_error)?;
+        let stats = crate::sync::execute(&plan, &storage, engine, &mut progress)
+            .await
+            .map_err(mcp_error)?;
 
         crate::sync::finalize(root, &plan.strategy, &storage)
             .await
