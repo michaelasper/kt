@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.4.1 (2026-05-11)</small>
+
+* Merge remote-tracking branch 'origin/main' ([c050b4e](https://github.com/michaelasper/kt/commit/c050b4e))
+* fix: apply cargo fmt formatting ([16ac625](https://github.com/michaelasper/kt/commit/16ac625))
+* fix: replace unwrap with expect for static tracing strings (issue #36) ([c3b30c9](https://github.com/michaelasper/kt/commit/c3b30c9)), closes [#36](https://github.com/michaelasper/kt/issues/36)
+
 ## 0.4.0 (2026-05-11)
 
 * feat: add cargo bin cache to test-macos job ([97aea99](https://github.com/michaelasper/kt/commit/97aea99))
