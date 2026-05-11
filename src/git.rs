@@ -1,4 +1,4 @@
-use git2::{Repository, Status};
+use git2::{ErrorCode, Repository, Status};
 use std::path::Path;
 use thiserror::Error;
 
@@ -6,6 +6,10 @@ use thiserror::Error;
 pub enum GitError {
     #[error("not a git repository: {0}")]
     NotARepository(String),
+    #[error("base ref not found: {base_ref}")]
+    BaseRefNotFound { base_ref: String },
+    #[error("base ref does not resolve to a commit: {base_ref}")]
+    BaseRefNotCommit { base_ref: String },
     #[error("git2 error: {0}")]
     Git2(#[from] git2::Error),
     #[error("no current branch (detached HEAD)")]
@@ -82,19 +86,128 @@ pub fn get_git_info(directory: &Path) -> Result<GitInfo, GitError> {
     })
 }
 
+fn resolve_base_commit<'repo>(
+    repo: &'repo Repository,
+    base_ref: &str,
+) -> Result<git2::Commit<'repo>, GitError> {
+    if let Ok(oid) = git2::Oid::from_str(base_ref) {
+        return repo
+            .find_object(oid, None)
+            .map_err(|err| {
+                if is_ref_resolution_miss(&err) {
+                    GitError::BaseRefNotFound {
+                        base_ref: base_ref.to_string(),
+                    }
+                } else {
+                    GitError::Git2(err)
+                }
+            })
+            .and_then(|object| peel_to_commit(object, base_ref));
+    }
+
+    if let Some(commit) = resolve_branch_commit(repo, base_ref)? {
+        return Ok(commit);
+    }
+
+    for candidate in base_ref_candidates(base_ref) {
+        match repo.revparse_single(&candidate) {
+            Ok(object) => return peel_to_commit(object, base_ref),
+            Err(err) if is_ref_resolution_miss(&err) => {}
+            Err(err) => return Err(GitError::Git2(err)),
+        }
+    }
+
+    Err(GitError::BaseRefNotFound {
+        base_ref: base_ref.to_string(),
+    })
+}
+
+fn resolve_branch_commit<'repo>(
+    repo: &'repo Repository,
+    base_ref: &str,
+) -> Result<Option<git2::Commit<'repo>>, GitError> {
+    if let Some(branch_name) = base_ref.strip_prefix("refs/heads/") {
+        return find_branch_commit(repo, branch_name, git2::BranchType::Local, base_ref);
+    }
+
+    if let Some(branch_name) = base_ref.strip_prefix("refs/remotes/") {
+        return find_branch_commit(repo, branch_name, git2::BranchType::Remote, base_ref);
+    }
+
+    if base_ref.starts_with("origin/") {
+        return find_branch_commit(repo, base_ref, git2::BranchType::Remote, base_ref);
+    }
+
+    if !base_ref.starts_with("refs/") {
+        if let Some(commit) = find_branch_commit(repo, base_ref, git2::BranchType::Local, base_ref)?
+        {
+            return Ok(Some(commit));
+        }
+
+        return find_branch_commit(
+            repo,
+            &format!("origin/{base_ref}"),
+            git2::BranchType::Remote,
+            base_ref,
+        );
+    }
+
+    Ok(None)
+}
+
+fn find_branch_commit<'repo>(
+    repo: &'repo Repository,
+    branch_name: &str,
+    branch_type: git2::BranchType,
+    base_ref: &str,
+) -> Result<Option<git2::Commit<'repo>>, GitError> {
+    match repo.find_branch(branch_name, branch_type) {
+        Ok(branch) => {
+            branch
+                .get()
+                .peel_to_commit()
+                .map(Some)
+                .map_err(|_| GitError::BaseRefNotCommit {
+                    base_ref: base_ref.to_string(),
+                })
+        }
+        Err(err) if is_ref_resolution_miss(&err) => Ok(None),
+        Err(err) => Err(GitError::Git2(err)),
+    }
+}
+
+fn peel_to_commit<'repo>(
+    object: git2::Object<'repo>,
+    base_ref: &str,
+) -> Result<git2::Commit<'repo>, GitError> {
+    object
+        .peel_to_commit()
+        .map_err(|_| GitError::BaseRefNotCommit {
+            base_ref: base_ref.to_string(),
+        })
+}
+
+fn base_ref_candidates(base_ref: &str) -> Vec<String> {
+    let mut candidates = vec![base_ref.to_string()];
+
+    if !base_ref.starts_with("refs/") && !base_ref.starts_with("origin/") {
+        candidates.push(format!("origin/{base_ref}"));
+        candidates.push(format!("refs/remotes/origin/{base_ref}"));
+    }
+
+    candidates
+}
+
+fn is_ref_resolution_miss(err: &git2::Error) -> bool {
+    matches!(err.code(), ErrorCode::NotFound | ErrorCode::InvalidSpec)
+}
+
 pub fn get_diff_files(directory: &Path, base_ref: &str) -> Result<Vec<String>, GitError> {
     let repo = Repository::discover(directory)
         .map_err(|_| GitError::NotARepository(directory.display().to_string()))?;
 
-    let base_oid = if let Ok(oid) = git2::Oid::from_str(base_ref) {
-        oid
-    } else {
-        let base = repo.find_branch(base_ref, git2::BranchType::Local)?;
-        base.get().target().ok_or(GitError::DetachedHead)?
-    };
-
     let head_oid = repo.head()?.target().ok_or(GitError::DetachedHead)?;
-    let base_commit = repo.find_commit(base_oid)?;
+    let base_commit = resolve_base_commit(&repo, base_ref)?;
     let head_commit = repo.find_commit(head_oid)?;
 
     let diff =
@@ -139,19 +252,6 @@ mod tests {
     use super::*;
     use git2::{BranchType, Oid, Signature};
     use std::fs::{self, write};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn make_temp_repo_path() -> std::path::PathBuf {
-        let mut path = std::env::temp_dir();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock valid")
-            .as_nanos();
-        let pid = std::process::id();
-        path.push(format!("kt-git-tests-{}-{}", pid, nanos));
-        fs::create_dir_all(&path).unwrap();
-        path
-    }
 
     fn commit_file(repo: &Repository, relative_path: &str, contents: &str, message: &str) -> Oid {
         let repo_path = repo.workdir().expect("repository has working directory");
@@ -184,11 +284,37 @@ mod tests {
     where
         F: FnOnce(&Repository),
     {
-        let path = make_temp_repo_path();
-        let repo = Repository::init(&path).unwrap();
-        let repo_path = path.clone();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(temp_dir.path()).unwrap();
         f(&repo);
-        fs::remove_dir_all(repo_path).unwrap();
+    }
+
+    fn create_origin_main(repo: &Repository, commit: &git2::Commit<'_>) {
+        repo.reference(
+            "refs/remotes/origin/main",
+            commit.id(),
+            true,
+            "create test origin/main",
+        )
+        .unwrap();
+    }
+
+    fn create_lightweight_tag(repo: &Repository, name: &str, commit: &git2::Commit<'_>) {
+        let object = repo.find_object(commit.id(), None).unwrap();
+        repo.tag_lightweight(name, &object, false).unwrap();
+    }
+
+    fn switch_to_feature_branch(repo: &Repository, base_commit: &git2::Commit<'_>) {
+        if repo.find_branch("feature", BranchType::Local).is_err() {
+            repo.branch("feature", base_commit, false).unwrap();
+        }
+        repo.set_head("refs/heads/feature").unwrap();
+    }
+
+    fn delete_local_branch_if_exists(repo: &Repository, name: &str) {
+        if let Ok(mut branch) = repo.find_branch(name, BranchType::Local) {
+            branch.delete().unwrap();
+        }
     }
 
     #[test]
@@ -237,6 +363,33 @@ mod tests {
     }
 
     #[test]
+    fn test_get_diff_files_prefers_local_branch_over_same_named_tag() {
+        with_temp_repo(|repo| {
+            let repo_path = repo.workdir().unwrap();
+            commit_file(repo, "base.rs", "pub fn base() {}\n", "base");
+
+            let base_commit = repo.head().unwrap().peel_to_commit().unwrap();
+            if repo.find_branch("main", BranchType::Local).is_err() {
+                repo.branch("main", &base_commit, false).unwrap();
+            }
+            switch_to_feature_branch(repo, &base_commit);
+
+            commit_file(repo, "tagged.rs", "pub fn tagged() {}\n", "tagged");
+            let tag_commit = repo.head().unwrap().peel_to_commit().unwrap();
+            create_lightweight_tag(repo, "main", &tag_commit);
+
+            commit_file(repo, "feature.rs", "pub fn feature() {}\n", "feature");
+
+            let mut changed = get_diff_files(repo_path, "main").unwrap();
+            changed.sort();
+            assert_eq!(
+                changed,
+                vec!["feature.rs".to_string(), "tagged.rs".to_string()]
+            );
+        });
+    }
+
+    #[test]
     fn test_get_diff_files_with_commit_sha() {
         with_temp_repo(|repo| {
             let repo_path = repo.workdir().unwrap();
@@ -248,6 +401,104 @@ mod tests {
 
             let changed = get_diff_files(repo_path, &base_sha).unwrap();
             assert_eq!(changed, vec!["new.rs".to_string()]);
+        });
+    }
+
+    #[test]
+    fn test_get_diff_files_with_explicit_origin_main() {
+        with_temp_repo(|repo| {
+            let repo_path = repo.workdir().unwrap();
+            commit_file(repo, "base.rs", "pub fn base() {}\n", "base");
+
+            let base_commit = repo.head().unwrap().peel_to_commit().unwrap();
+            create_origin_main(repo, &base_commit);
+            switch_to_feature_branch(repo, &base_commit);
+            delete_local_branch_if_exists(repo, "main");
+
+            commit_file(repo, "feature.rs", "pub fn feature() {}\n", "feature");
+
+            assert!(repo.find_branch("main", BranchType::Local).is_err());
+            let changed = get_diff_files(repo_path, "origin/main").unwrap();
+            assert_eq!(changed, vec!["feature.rs".to_string()]);
+        });
+    }
+
+    #[test]
+    fn test_get_diff_files_prefers_remote_branch_over_same_named_tag() {
+        with_temp_repo(|repo| {
+            let repo_path = repo.workdir().unwrap();
+            commit_file(repo, "base.rs", "pub fn base() {}\n", "base");
+
+            let base_commit = repo.head().unwrap().peel_to_commit().unwrap();
+            create_origin_main(repo, &base_commit);
+            switch_to_feature_branch(repo, &base_commit);
+            delete_local_branch_if_exists(repo, "main");
+
+            commit_file(repo, "tagged.rs", "pub fn tagged() {}\n", "tagged");
+            let tag_commit = repo.head().unwrap().peel_to_commit().unwrap();
+            create_lightweight_tag(repo, "origin/main", &tag_commit);
+
+            commit_file(repo, "feature.rs", "pub fn feature() {}\n", "feature");
+
+            let mut changed = get_diff_files(repo_path, "origin/main").unwrap();
+            changed.sort();
+            assert_eq!(
+                changed,
+                vec!["feature.rs".to_string(), "tagged.rs".to_string()]
+            );
+        });
+    }
+
+    #[test]
+    fn test_get_diff_files_falls_back_to_origin_main() {
+        with_temp_repo(|repo| {
+            let repo_path = repo.workdir().unwrap();
+            commit_file(repo, "base.rs", "pub fn base() {}\n", "base");
+
+            let base_commit = repo.head().unwrap().peel_to_commit().unwrap();
+            create_origin_main(repo, &base_commit);
+            switch_to_feature_branch(repo, &base_commit);
+            delete_local_branch_if_exists(repo, "main");
+
+            commit_file(repo, "feature.rs", "pub fn feature() {}\n", "feature");
+
+            assert!(repo.find_branch("main", BranchType::Local).is_err());
+            let changed = get_diff_files(repo_path, "main").unwrap();
+            assert_eq!(changed, vec!["feature.rs".to_string()]);
+        });
+    }
+
+    #[test]
+    fn test_get_diff_files_reports_missing_base_ref() {
+        with_temp_repo(|repo| {
+            let repo_path = repo.workdir().unwrap();
+            commit_file(repo, "base.rs", "pub fn base() {}\n", "base");
+
+            let err = get_diff_files(repo_path, "missing-base").unwrap_err();
+            match err {
+                GitError::BaseRefNotFound { base_ref } => {
+                    assert_eq!(base_ref, "missing-base");
+                }
+                other => panic!("expected BaseRefNotFound, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn test_get_diff_files_reports_base_ref_not_commit() {
+        with_temp_repo(|repo| {
+            let repo_path = repo.workdir().unwrap();
+            commit_file(repo, "base.rs", "pub fn base() {}\n", "base");
+
+            let blob_oid = repo.blob(b"not a commit").unwrap();
+            let blob_ref = blob_oid.to_string();
+            let err = get_diff_files(repo_path, &blob_ref).unwrap_err();
+            match err {
+                GitError::BaseRefNotCommit { base_ref } => {
+                    assert_eq!(base_ref, blob_ref);
+                }
+                other => panic!("expected BaseRefNotCommit, got {other:?}"),
+            }
         });
     }
 }
