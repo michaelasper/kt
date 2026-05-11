@@ -67,6 +67,11 @@ jobs:
       - name: Run cargo fmt
         run: cargo fmt --all -- --check
 
+      - name: Check for unused dependencies
+        run: |
+          cargo install cargo-machete
+          cargo machete --with-metadata
+
   test-macos:
     name: Test (macOS)
     runs-on: macos-latest
