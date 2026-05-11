@@ -315,7 +315,7 @@ pub(super) async fn lookup_chunks_by_name_impl(
 mod tests {
     use super::parse_search_results;
     use crate::storage::index::is_index_not_found_error;
-    use crate::Language as Language;
+    use crate::Language;
     use redis::RedisError;
     use redis::Value;
 

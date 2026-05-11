@@ -24,9 +24,7 @@ pub(super) async fn index_exists(
     match result {
         Ok(_) => Ok(true),
         Err(e) => {
-            if is_index_not_found_error(&e)
-                || e.to_string().to_lowercase().contains("not found")
-            {
+            if is_index_not_found_error(&e) || e.to_string().to_lowercase().contains("not found") {
                 Ok(false)
             } else {
                 Err(KtError::Redis(e).into())
@@ -37,20 +35,36 @@ pub(super) async fn index_exists(
 
 fn build_schema_args(include_mtime: bool) -> Vec<&'static str> {
     let mut args = vec![
-        "chunk_id", "TAG",
-        "filepath", "TEXT",
-        "language", "TAG",
-        "node_type", "TAG",
-        "name", "TEXT",
-        "signature", "TEXT",
-        "content", "TEXT",
-        "start_line", "NUMERIC",
-        "end_line", "NUMERIC",
-        "parent_context", "TEXT",
-        "embedding", "VECTOR", "FLAT", "6",
-        "TYPE", "FLOAT32",
-        "DIM", "384",
-        "DISTANCE_METRIC", "COSINE",
+        "chunk_id",
+        "TAG",
+        "filepath",
+        "TEXT",
+        "language",
+        "TAG",
+        "node_type",
+        "TAG",
+        "name",
+        "TEXT",
+        "signature",
+        "TEXT",
+        "content",
+        "TEXT",
+        "start_line",
+        "NUMERIC",
+        "end_line",
+        "NUMERIC",
+        "parent_context",
+        "TEXT",
+        "embedding",
+        "VECTOR",
+        "FLAT",
+        "6",
+        "TYPE",
+        "FLOAT32",
+        "DIM",
+        "384",
+        "DISTANCE_METRIC",
+        "COSINE",
     ];
     if include_mtime {
         args.extend_from_slice(&["mtime", "TEXT"]);
@@ -118,6 +132,6 @@ pub(super) async fn alter_add_mtime(
             debug!("mtime field already exists in index {INDEX_NAME}");
             Ok(())
         }
-        Err(e) => Err(KtError::Redis(e).into())
+        Err(e) => Err(KtError::Redis(e).into()),
     }
 }

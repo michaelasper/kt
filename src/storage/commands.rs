@@ -7,8 +7,7 @@ use super::search::{escape_exact_match, extract_doc_keys};
 
 macro_rules! append_hset_fields {
     ($cmd:expr, $chunk:expr, $embedding_bytes:expr, $mtime:expr) => {{
-        $cmd
-            .arg("chunk_id")
+        $cmd.arg("chunk_id")
             .arg(&$chunk.chunk_id)
             .arg("filepath")
             .arg(&$chunk.filepath)
@@ -69,7 +68,12 @@ pub(super) async fn store_chunks_batch_impl(
 
         let pipe_cmd = pipe.cmd("HSET");
         pipe_cmd.arg(&key);
-        append_hset_fields!(pipe_cmd, chunk, &embedding_bytes, mtimes.and_then(|m| m.get(i)));
+        append_hset_fields!(
+            pipe_cmd,
+            chunk,
+            &embedding_bytes,
+            mtimes.and_then(|m| m.get(i))
+        );
 
         pipe_cmd.ignore();
     }
