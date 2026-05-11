@@ -309,9 +309,10 @@ impl Storage {
         let mut conn = self.connection().await?;
         let mut results = Vec::new();
 
+        let mut pipe = redis::pipe();
         for name in names {
             let query_str = format!("@name:\"{}\"", escape_exact_match(name));
-            let result: redis::Value = cmd("FT.SEARCH")
+            pipe.cmd("FT.SEARCH")
                 .arg(INDEX_NAME)
                 .arg(&query_str)
                 .arg("DIALECT")
@@ -328,11 +329,12 @@ impl Storage {
                 .arg("name")
                 .arg("signature")
                 .arg("content")
-                .arg("parent_context")
-                .query_async(&mut conn)
-                .await?;
+                .arg("parent_context");
+        }
 
-            results.extend(parse_search_results(result)?);
+        let pipe_results: Vec<redis::Value> = pipe.query_async(&mut conn).await?;
+        for value in pipe_results {
+            results.extend(parse_search_results(value)?);
         }
 
         Ok(results)
