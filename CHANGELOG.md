@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.5.2 (2026-05-11)</small>
+
+* perf: batch lookup_chunks_by_name FT.SEARCH calls via Redis pipeline ([aad386d](https://github.com/michaelasper/kt/commit/aad386d)), closes [#24](https://github.com/michaelasper/kt/issues/24)
+
 ## <small>0.5.1 (2026-05-11)</small>
 
 * fix: remove panic when tree-sitter language fails to load ([986b9bf](https://github.com/michaelasper/kt/commit/986b9bf)), closes [#33](https://github.com/michaelasper/kt/issues/33)
