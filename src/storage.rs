@@ -841,27 +841,31 @@ impl Storage {
 }
 
 fn parse_search_results(value: redis::Value) -> anyhow::Result<Vec<SearchResult>> {
-    let mut results = Vec::new();
-
     let arr = match value {
         redis::Value::Array(a) => a,
-        _ => return Ok(results),
+        other => anyhow::bail!(
+            "FT.SEARCH expected array response, got {:?}",
+            other
+        ),
     };
 
     if arr.is_empty() {
-        return Ok(results);
+        return Ok(Vec::new());
     }
 
     let total_count = match &arr[0] {
         redis::Value::Int(n) => *n as usize,
-        redis::Value::BulkString(bs) => String::from_utf8_lossy(bs).parse().unwrap_or(0),
-        _ => return Ok(results),
+        invalid => anyhow::bail!(
+            "Invalid FT.SEARCH count: expected integer, got {:?}",
+            invalid
+        ),
     };
 
     if total_count == 0 {
-        return Ok(results);
+        return Ok(Vec::new());
     }
 
+    let mut results = Vec::new();
     let mut i = 1;
     while i + 1 < arr.len() {
         let fields = &arr[i + 1];
@@ -1000,8 +1004,9 @@ fn extract_doc_keys(value: &redis::Value) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_index_not_found_error;
+    use super::{is_index_not_found_error, parse_search_results, Language};
     use redis::RedisError;
+    use redis::Value;
 
     #[test]
     fn index_not_found_error_matches_common_variants() {
@@ -1020,5 +1025,93 @@ mod tests {
     fn index_not_found_error_rejects_other_messages() {
         let err = RedisError::from((redis::ErrorKind::ResponseError, "syntax error"));
         assert!(!is_index_not_found_error(&err));
+    }
+
+    #[test]
+    fn parse_search_results_returns_error_for_non_array() {
+        let value = Value::Okay;
+        let result = parse_search_results(value);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("expected array response"));
+    }
+
+    #[test]
+    fn parse_search_results_returns_empty_for_empty_array() {
+        let value = Value::Array(vec![]);
+        let result = parse_search_results(value).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_search_results_returns_error_for_bulk_string_count() {
+        let value = Value::Array(vec![
+            Value::BulkString(b"2".to_vec()),
+            Value::BulkString(b"doc1".to_vec()),
+            Value::Array(vec![
+                Value::BulkString(b"chunk_id".to_vec()),
+                Value::BulkString(b"chunk1".to_vec()),
+                Value::BulkString(b"filepath".to_vec()),
+                Value::BulkString(b"src/main.rs".to_vec()),
+                Value::BulkString(b"language".to_vec()),
+                Value::BulkString(b"rust".to_vec()),
+                Value::BulkString(b"content".to_vec()),
+                Value::BulkString(b"fn main() {}".to_vec()),
+            ]),
+        ]);
+        let result = parse_search_results(value);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("expected integer"));
+    }
+
+    #[test]
+    fn parse_search_results_returns_error_for_unexpected_type_count() {
+        let value = Value::Array(vec![
+            Value::Nil,
+        ]);
+        let result = parse_search_results(value);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("expected integer"));
+    }
+
+    #[test]
+    fn parse_search_results_parses_valid_response() {
+        let value = Value::Array(vec![
+            Value::Int(1),
+            Value::BulkString(b"doc1".to_vec()),
+            Value::Array(vec![
+                Value::BulkString(b"chunk_id".to_vec()),
+                Value::BulkString(b"chunk1".to_vec()),
+                Value::BulkString(b"filepath".to_vec()),
+                Value::BulkString(b"src/main.rs".to_vec()),
+                Value::BulkString(b"language".to_vec()),
+                Value::BulkString(b"rust".to_vec()),
+                Value::BulkString(b"node_type".to_vec()),
+                Value::BulkString(b"function".to_vec()),
+                Value::BulkString(b"name".to_vec()),
+                Value::BulkString(b"main".to_vec()),
+                Value::BulkString(b"content".to_vec()),
+                Value::BulkString(b"fn main() {}".to_vec()),
+                Value::BulkString(b"vector_score".to_vec()),
+                Value::BulkString(b"0.95".to_vec()),
+            ]),
+        ]);
+        let result = parse_search_results(value).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].chunk_id, "chunk1");
+        assert_eq!(result[0].filepath, "src/main.rs");
+        assert!(matches!(result[0].language, Language::Rust));
+        assert_eq!(result[0].node_type, "function");
+        assert_eq!(result[0].name, "main");
+        assert_eq!(result[0].content, "fn main() {}");
+        assert_eq!(result[0].score, 0.95);
+    }
+
+    #[test]
+    fn parse_search_results_returns_empty_when_count_is_zero() {
+        let value = Value::Array(vec![
+            Value::Int(0),
+        ]);
+        let result = parse_search_results(value).unwrap();
+        assert!(result.is_empty());
     }
 }
