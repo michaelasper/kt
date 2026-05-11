@@ -28,7 +28,7 @@ New signature:
 pub fn generate_id(filepath: &str, name: &str, start_line: usize) -> String
 ```
 
-Hash input: `filepath.as_bytes() + b"\x00" + name.as_bytes() + b"\x00" + start_line.to_string().as_bytes()`
+Hash input: `filepath.as_bytes() + b"\x00" + name.as_bytes() + b"\x00" + start_line.to_be_bytes()`
 
 ### 2. `src/indexing.rs` — Two call sites
 
