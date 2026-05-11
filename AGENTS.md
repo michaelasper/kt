@@ -5,14 +5,21 @@ A local polyglot codebase RAG via MCP.
 ## Architecture
 
 - `src/lib.rs` — Core types: `Language`, `Chunk`, `SearchResult`
-- `src/config.rs` — Config from env vars
-- `src/discovery.rs` — File walker
+- `src/config.rs` — Config from env vars (`KT_REDIS_URL`, `KT_MODEL_CACHE_DIR`)
+- `src/error.rs` — Centralized `KtError` enum (Redis, Ort, Io, ParseFailed, etc.)
+- `src/discovery.rs` — File walker with ignored directory filtering
 - `src/indexing.rs` — Tree-sitter AST chunker with parent context injection
 - `src/indexing/languages.rs` — Per-language Tree-sitter configs (Rust, Go, Java)
 - `src/embedding.rs` — ONNX Runtime embedding engine (all-MiniLM-L6-v2, 384-dim)
-- `src/storage.rs` — Redis CRUD, FT.CREATE index, hybrid vector+BM25 search
-- `src/mcp.rs` — MCP server with 3 tools (kt_search, kt_read_file, kt_sync)
-- `src/main.rs` — clap CLI: `kt sync <dir>` or `kt serve`
+- `src/storage.rs` — Redis CRUD, FT.CREATE index, hybrid vector+BM25 search, shadow index
+- `src/sync.rs` — Shared sync pipeline: `SyncStrategy`, `SyncPlan`, `SyncStats`, `SyncProgress`
+- `src/git.rs` — Git integration via git2 (branch, commit SHA, diff, status)
+- `src/mcp.rs` — MCP server with 5 tools (kt_search, kt_read_file, kt_sync, kt_git_status, kt_index_pr)
+- `src/mcp_setup.rs` — Interactive MCP harness setup (OpenCode, Claude Desktop, Cline, Continue, Pi)
+- `src/global_config.rs` — Global configuration management (`~/.config/kt/config.json`)
+- `src/sync_ui.rs` — Terminal sync progress UI (pretty + plain modes)
+- `src/upgrade.rs` — Self-upgrader from GitHub releases
+- `src/main.rs` — clap CLI: `kt serve`, `kt sync`, `kt upgrade`, `kt mcp setup/list/show/remove`
 
 ## Testing
 
@@ -24,7 +31,7 @@ cargo clippy --all-targets --all-features
 
 ## Using kt
 
-The `kt` MCP server is configured in OpenCode. Use `kt_search` to search the codebase semantically, `kt_read_file` to read file chunks, and `kt_sync` to index a directory.
+The `kt` MCP server is configured in OpenCode. Use `kt_search` to search the codebase semantically, `kt_read_file` to read file chunks, `kt_sync` to index a directory, `kt_git_status` for branch/commit context, and `kt_index_pr` to shadow-index working tree changes.
 
 **Partial Sync**: `kt_sync` automatically detects git repositories and only syncs changed files (using git2 to compare commits) or files with modified timestamps (for non-git repos). This makes incremental syncs fast. Use `kt sync --full <dir>` to force a complete re-index.
 
