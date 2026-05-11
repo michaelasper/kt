@@ -66,17 +66,17 @@ impl PrettySyncUI {
         let multi = MultiProgress::with_draw_target(ProgressDrawTarget::stdout());
 
         let target_bar = multi.add(ProgressBar::new_spinner());
-let target_style = ProgressStyle::with_template("  [{prefix:.cyan}] {msg:.bold}")
-        .expect("Failed to parse target progress bar template")
-        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈");
+        let target_style = ProgressStyle::with_template("  [{prefix:.cyan}] {msg:.bold}")
+            .expect("Failed to parse target progress bar template")
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈");
         target_bar.set_style(target_style);
         target_bar.set_prefix(" TARGET ");
 
         let mut rain_bars = Vec::new();
         for i in 0..3 {
             let bar = multi.add(ProgressBar::new_spinner());
-let rain_style = ProgressStyle::with_template("{msg}")
-        .expect("Failed to parse rain progress bar template");
+            let rain_style = ProgressStyle::with_template("{msg}")
+                .expect("Failed to parse rain progress bar template");
             bar.set_style(rain_style);
             if i == 0 {
                 bar.set_message("           ↓  ↓  ↓  ↓  ↓");
@@ -87,15 +87,15 @@ let rain_style = ProgressStyle::with_template("{msg}")
         }
 
         let spacer = multi.add(ProgressBar::new_spinner());
-spacer.set_style(
-        ProgressStyle::with_template("").expect("Failed to parse spacer progress bar template"),
-    );
+        spacer.set_style(
+            ProgressStyle::with_template("").expect("Failed to parse spacer progress bar template"),
+        );
 
         let chunks_bar = multi.add(ProgressBar::new(0));
-let chunks_style =
-        ProgressStyle::with_template("  [{prefix:.cyan}] {wide_bar:.green/dim} ({pos}/{len})")
-        .expect("Failed to parse chunks progress bar template")
-        .progress_chars("▓▓░");
+        let chunks_style =
+            ProgressStyle::with_template("  [{prefix:.cyan}] {wide_bar:.green/dim} ({pos}/{len})")
+                .expect("Failed to parse chunks progress bar template")
+                .progress_chars("▓▓░");
         chunks_bar.set_style(chunks_style);
         chunks_bar.set_prefix(" CHUNKS ");
 
