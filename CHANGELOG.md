@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.4.0 (2026-05-11)
+
+* feat: add cargo bin cache to test-macos job ([97aea99](https://github.com/michaelasper/kt/commit/97aea99))
+* feat: add pre-push hook with all CI checks ([1de81ed](https://github.com/michaelasper/kt/commit/1de81ed))
+* fix: add ndarray to cargo-machete ignored list ([83f78b8](https://github.com/michaelasper/kt/commit/83f78b8))
+* fix: apply cargo fmt formatting ([e6dff20](https://github.com/michaelasper/kt/commit/e6dff20))
+* Address code review feedback for issue #34 ([6e171e4](https://github.com/michaelasper/kt/commit/6e171e4)), closes [#34](https://github.com/michaelasper/kt/issues/34)
+* Cache cargo bin and pin cargo-machete version in CI ([cddf84b](https://github.com/michaelasper/kt/commit/cddf84b))
+* Fix silent failures in FT.SEARCH result count parsing (Issue #34) ([7b397ba](https://github.com/michaelasper/kt/commit/7b397ba)), closes [#34](https://github.com/michaelasper/kt/issues/34)
+* Remove unused dependencies (issues #22, #35) and add cargo-machete to CI ([ece7a74](https://github.com/michaelasper/kt/commit/ece7a74)), closes [#22](https://github.com/michaelasper/kt/issues/22) [#35](https://github.com/michaelasper/kt/issues/35)
+
 ## <small>0.3.3 (2026-05-11)</small>
 
 * fix: format test assertions per rustfmt ([03427f6](https://github.com/michaelasper/kt/commit/03427f6))
