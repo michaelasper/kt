@@ -55,6 +55,12 @@ jobs:
           path: target
           key: linux-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Cache cargo bin
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin
+          key: linux-cargo-bin-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Run cargo check
         run: cargo check --all-targets --all-features
 
@@ -69,7 +75,7 @@ jobs:
 
       - name: Check for unused dependencies
         run: |
-          cargo install cargo-machete
+          cargo install cargo-machete@0.7.0
           cargo machete --with-metadata
 
   test-macos:
