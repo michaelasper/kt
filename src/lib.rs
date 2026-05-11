@@ -64,11 +64,14 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    pub fn generate_id(filepath: &str, name: &str) -> String {
+    pub fn generate_id(filepath: &str, name: &str, start_line: usize) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(filepath.as_bytes());
+        hasher.update(b"\x00");
         hasher.update(name.as_bytes());
+        hasher.update(b"\x00");
+        hasher.update(start_line.to_string().as_bytes());
         let result = hasher.finalize();
         hex::encode(result)
     }
@@ -85,4 +88,30 @@ pub struct SearchResult {
     pub content: String,
     pub parent_context: Option<String>,
     pub score: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Chunk;
+
+    #[test]
+    fn generate_id_uniqueness() {
+        let id_a = Chunk::generate_id("src/lib.rs", "new", 10);
+        let id_b = Chunk::generate_id("src/lib.rs", "new", 20);
+        assert_ne!(id_a, id_b, "same filepath+name at different lines must produce different IDs");
+    }
+
+    #[test]
+    fn generate_id_stability() {
+        let id_a = Chunk::generate_id("src/lib.rs", "new", 10);
+        let id_b = Chunk::generate_id("src/lib.rs", "new", 10);
+        assert_eq!(id_a, id_b, "same inputs must produce the same ID");
+    }
+
+    #[test]
+    fn generate_id_separator_safety() {
+        let id_a = Chunk::generate_id("fo", "obar", 1);
+        let id_b = Chunk::generate_id("foob", "ar", 1);
+        assert_ne!(id_a, id_b, "boundary-crossing field values must produce different IDs");
+    }
 }

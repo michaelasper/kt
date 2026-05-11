@@ -137,7 +137,7 @@ fn build_chunk(
 
     let parent_ctx_str = parent_context.as_ref().map(|ctx| ctx.header.clone());
 
-    let chunk_id = Chunk::generate_id(relative_path, &name);
+    let chunk_id = Chunk::generate_id(relative_path, &name, start_line);
 
     Some(Chunk {
         chunk_id,
@@ -276,7 +276,7 @@ fn fallback_line_chunks(source: &str, relative_path: &str, language: Language) -
         let end_line = start_line + chunk_lines.len().saturating_sub(1);
         let content = chunk_lines.join("\n");
         let name = format!("lines_{}_{}", start_line, end_line);
-        let chunk_id = Chunk::generate_id(relative_path, &name);
+        let chunk_id = Chunk::generate_id(relative_path, &name, start_line);
 
         chunks.push(Chunk {
             chunk_id,
