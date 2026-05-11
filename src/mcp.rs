@@ -212,161 +212,35 @@ impl KtServer {
             params.directory_path, full
         );
 
-        let files = if full {
-            info!("Full sync requested");
-            crate::discovery::discover_files(root)
-        } else if git2::Repository::discover(root).is_ok() {
-            info!("Git repository detected, using git-aware partial sync");
-
-            let git_info = crate::git::get_git_info(root).map_err(mcp_error)?;
-
-            match git_info.commit_sha {
-                None => {
-                    warn!("No commit SHA found (detached HEAD?), falling back to full sync");
-                    crate::discovery::discover_files(root)
-                }
-                Some(current_commit) => {
-                    let storage = self.inner.storage.read().await;
-                    let last_commit = storage
-                        .get_last_synced_commit(&params.directory_path)
-                        .await
-                        .map_err(mcp_error)?;
-
-                    match last_commit {
-                        None => {
-                            info!("No previous sync found, performing full sync");
-                            crate::discovery::discover_files(root)
-                        }
-                        Some(last) if last == current_commit => {
-                            return Ok(CallToolResult::success(vec![Content::text(
-                                "<result>Already up to date (no changes)</result>".to_string(),
-                            )]));
-                        }
-                        Some(last) => {
-                            info!(
-                                "Changes detected ({} -> {}), performing partial sync",
-                                &last[..8],
-                                &current_commit[..8]
-                            );
-
-                            let changed_paths =
-                                crate::git::get_diff_files(root, &last).map_err(mcp_error)?;
-
-                            for path in &changed_paths {
-                                if !root.join(path).exists() {
-                                    info!("Removing deleted file from index: {}", path);
-                                    if let Err(e) = storage.remove_file_chunks(path).await {
-                                        warn!(
-                                            "Failed to remove chunks for deleted file {}: {e}",
-                                            path
-                                        );
-                                    }
-                                }
-                            }
-
-                            let changed_set: std::collections::HashSet<_> =
-                                changed_paths.into_iter().collect();
-
-                            let all_files = crate::discovery::discover_files(root);
-                            let changed_files: Vec<_> = all_files
-                                .into_iter()
-                                .filter(|f| changed_set.contains(&f.relative_path))
-                                .collect();
-
-                            if changed_files.is_empty() {
-                                return Ok(CallToolResult::success(vec![Content::text(
-                                    "<result>No supported files in changed set</result>"
-                                        .to_string(),
-                                )]));
-                            }
-
-                            info!("Found {} changed files to index", changed_files.len());
-                            changed_files
-                        }
-                    }
-                }
-            }
-        } else {
-            info!("Not a git repository, using mtime-based partial sync");
-
-            let storage = self.inner.storage.read().await;
-            let known_mtimes = storage.get_file_mtimes().await.map_err(mcp_error)?;
-            crate::discovery::discover_modified_files(root, &known_mtimes)
-        };
-
-        if files.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "<result>No supported files found to sync</result>".to_string(),
-            )]));
-        }
-
-        let mut total_chunks = 0usize;
-        let mut total_files = 0usize;
-        let mut errors = 0usize;
-
+        let storage = self.inner.storage.read().await;
         let embedding_guard = self.inner.embedding.read().await;
         let engine = embedding_guard
             .as_ref()
             .ok_or_else(|| mcp_error("Embedding engine not available"))?;
 
-        let storage = self.inner.storage.read().await;
+        let plan = crate::sync::plan(root, &storage, full)
+            .await
+            .map_err(mcp_error)?;
 
-        for file in &files {
-            let chunks =
-                crate::indexing::parse_file(&file.path, &file.relative_path, file.language);
-
-            if chunks.is_empty() {
-                continue;
-            }
-
-            if let Err(e) = storage.remove_file_chunks(&file.relative_path).await {
-                warn!("Failed to clean old chunks for {}: {e}", file.relative_path);
-            }
-
-            let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-            match engine.embed_batch(&texts) {
-                Ok(embeddings) => {
-                    let mtime = crate::discovery::get_file_mtime(&file.path).unwrap_or_default();
-                    let mtimes = vec![mtime; chunks.len()];
-
-                    if let Err(e) = storage
-                        .store_chunks_batch_with_mtimes(&chunks, &embeddings, &mtimes)
-                        .await
-                    {
-                        warn!("Failed to store chunks for {}: {e}", file.relative_path);
-                        errors += 1;
-                        continue;
-                    }
-                    total_chunks += chunks.len();
-                    total_files += 1;
-                }
-                Err(e) => {
-                    warn!("Failed to embed chunks for {}: {e}", file.relative_path);
-                    errors += 1;
-                }
-            }
+        if plan.files.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "<result>No supported files found to sync</result>".to_string(),
+            )]));
         }
 
-        if !full {
-            if let Ok(git_info) = crate::git::get_git_info(root) {
-                if let Some(commit) = git_info.commit_sha {
-                    if let Err(e) = storage
-                        .set_last_synced_commit(&params.directory_path, &commit)
-                        .await
-                    {
-                        warn!("Failed to update sync state: {e}");
-                    }
-                }
-            }
-        } else {
-            if let Err(e) = storage.clear_sync_state(&params.directory_path).await {
-                warn!("Failed to clear sync state: {e}");
-            }
-        }
+        let mut progress = crate::sync::NoopProgress;
+        let stats =
+            crate::sync::execute(&plan.files, &storage, engine, &mut progress)
+                .await
+                .map_err(mcp_error)?;
+
+        crate::sync::finalize(root, &plan.strategy, &storage)
+            .await
+            .map_err(mcp_error)?;
 
         let msg = format!(
             "<result>Sync complete: {} files, {} chunks indexed, {} errors</result>",
-            total_files, total_chunks, errors
+            stats.total_files, stats.total_chunks, stats.errors
         );
         info!("{msg}");
         Ok(CallToolResult::success(vec![Content::text(msg)]))

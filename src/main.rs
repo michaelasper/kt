@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use kt::global_config::GlobalConfigManager;
 use kt::mcp_setup::HarnessType;
+use kt::sync::SyncProgress;
 use kt::upgrade::Upgrader;
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -93,6 +94,30 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+struct CliProgress {
+    ui: Option<kt::sync_ui::SyncUI>,
+}
+
+impl kt::sync::SyncProgress for CliProgress {
+    fn start_file(&mut self, path: &str, index: usize) {
+        if let Some(ui) = &mut self.ui {
+            ui.start_file(path, index);
+        }
+    }
+
+    fn finish_file(&mut self, path: &str, chunks: usize) {
+        if let Some(ui) = &mut self.ui {
+            ui.finish_file(path, chunks);
+        }
+    }
+
+    fn finish(&mut self, files: usize, chunks: usize) {
+        if let Some(ui) = self.ui.take() {
+            ui.finish(files, chunks);
+        }
+    }
+}
+
 async fn run_sync(
     config: &kt::config::Config,
     directory: &std::path::Path,
@@ -126,150 +151,21 @@ async fn run_sync(
 
     let engine = kt::embedding::EmbeddingEngine::new(config).await?;
 
-    let files = if full {
-        tracing::info!("Full sync requested (--full flag)");
-        kt::discovery::discover_files(directory)
-    } else if git2::Repository::discover(directory).is_ok() {
-        tracing::info!("Git repository detected, using git-aware partial sync");
+    let plan = kt::sync::plan(directory, &storage, full).await?;
 
-        let git_info = kt::git::get_git_info(directory)?;
-
-        match git_info.commit_sha {
-            None => {
-                tracing::warn!("No commit SHA found (detached HEAD?), falling back to full sync");
-                kt::discovery::discover_files(directory)
-            }
-            Some(current_commit) => {
-                let dir_str = directory
-                    .to_str()
-                    .ok_or_else(|| anyhow::anyhow!("Invalid UTF-8 in directory path"))?;
-                let last_commit = storage.get_last_synced_commit(dir_str).await?;
-
-                match last_commit {
-                    None => {
-                        tracing::info!("No previous sync found, performing full sync");
-                        kt::discovery::discover_files(directory)
-                    }
-                    Some(last) if last == current_commit => {
-                        tracing::info!("Already up to date (commit: {})", current_commit);
-                        return Ok(());
-                    }
-                    Some(last) => {
-                        tracing::info!(
-                            "Changes detected ({} -> {}), performing partial sync",
-                            &last[..8],
-                            &current_commit[..8]
-                        );
-
-                        match kt::git::get_diff_files(directory, &last) {
-                            Ok(changed_paths) => {
-                                for path in &changed_paths {
-                                    if !directory.join(path).exists() {
-                                        tracing::info!(
-                                            "Removing deleted file from index: {}",
-                                            path
-                                        );
-                                        if let Err(e) = storage.remove_file_chunks(path).await {
-                                            tracing::warn!(
-                                                "Failed to remove chunks for deleted file {}: {e}",
-                                                path
-                                            );
-                                        }
-                                    }
-                                }
-
-                                let changed_set: std::collections::HashSet<_> =
-                                    changed_paths.into_iter().collect();
-
-                                let all_files = kt::discovery::discover_files(directory);
-                                let changed_files: Vec<_> = all_files
-                                    .into_iter()
-                                    .filter(|f| changed_set.contains(&f.relative_path))
-                                    .collect();
-
-                                if changed_files.is_empty() {
-                                    tracing::info!("No supported files in changed set");
-                                    return Ok(());
-                                }
-
-                                tracing::info!(
-                                    "Found {} changed files to index",
-                                    changed_files.len()
-                                );
-                                changed_files
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Failed to compute diff ({e}), falling back to full sync"
-                                );
-                                kt::discovery::discover_files(directory)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    } else {
-        tracing::info!("Not a git repository, using mtime-based partial sync");
-
-        let known_mtimes = storage.get_file_mtimes().await?;
-        kt::discovery::discover_modified_files(directory, &known_mtimes)
-    };
-
-    if files.is_empty() {
+    if plan.files.is_empty() {
         tracing::info!("No supported files found to sync");
         return Ok(());
     }
 
-    let mut ui = kt::sync_ui::SyncUI::new(files.len());
+    let mut progress = CliProgress {
+        ui: Some(kt::sync_ui::SyncUI::new(plan.files.len())),
+    };
 
-    let mut total_chunks = 0usize;
-    let mut total_files = 0usize;
+    let stats = kt::sync::execute(&plan.files, &storage, &engine, &mut progress).await?;
+    kt::sync::finalize(directory, &plan.strategy, &storage).await?;
 
-    for (i, file) in files.iter().enumerate() {
-        let chunks = kt::indexing::parse_file(&file.path, &file.relative_path, file.language);
-        if chunks.is_empty() {
-            continue;
-        }
-
-        ui.start_file(&file.relative_path, i);
-
-        if let Err(e) = storage.remove_file_chunks(&file.relative_path).await {
-            tracing::warn!("Failed to clean old chunks for {}: {e}", file.relative_path);
-        }
-
-        let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-        let embeddings = engine.embed_batch(&texts)?;
-
-        let mtime = kt::discovery::get_file_mtime(&file.path).unwrap_or_default();
-        let mtimes = vec![mtime; chunks.len()];
-
-        storage
-            .store_chunks_batch_with_mtimes(&chunks, &embeddings, &mtimes)
-            .await?;
-        total_chunks += chunks.len();
-        total_files += 1;
-
-        ui.finish_file(&file.relative_path, chunks.len());
-    }
-
-    let dir_str = directory
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid UTF-8 in directory path"))?;
-
-    if !full {
-        if let Ok(git_info) = kt::git::get_git_info(directory) {
-            if let Some(commit) = git_info.commit_sha {
-                storage.set_last_synced_commit(dir_str, &commit).await?;
-                tracing::debug!("Updated last synced commit to {}", &commit[..8]);
-            }
-        }
-    } else {
-        storage.clear_sync_state(dir_str).await?;
-        tracing::debug!("Cleared sync state after full sync");
-    }
-
-    ui.finish(total_files, total_chunks);
+    progress.finish(stats.total_files, stats.total_chunks);
 
     Ok(())
 }
