@@ -854,7 +854,15 @@ fn parse_search_results(value: redis::Value) -> anyhow::Result<Vec<SearchResult>
     }
 
     let total_count = match &arr[0] {
-        redis::Value::Int(n) => *n as usize,
+        redis::Value::Int(n) => {
+            if *n < 0 {
+                anyhow::bail!(
+                    "Invalid FT.SEARCH count: expected non-negative integer, got {}",
+                    n
+                );
+            }
+            *n as usize
+        }
         invalid => anyhow::bail!(
             "Invalid FT.SEARCH count: expected integer, got {:?}",
             invalid
@@ -1046,21 +1054,20 @@ mod tests {
     fn parse_search_results_returns_error_for_bulk_string_count() {
         let value = Value::Array(vec![
             Value::BulkString(b"2".to_vec()),
-            Value::BulkString(b"doc1".to_vec()),
-            Value::Array(vec![
-                Value::BulkString(b"chunk_id".to_vec()),
-                Value::BulkString(b"chunk1".to_vec()),
-                Value::BulkString(b"filepath".to_vec()),
-                Value::BulkString(b"src/main.rs".to_vec()),
-                Value::BulkString(b"language".to_vec()),
-                Value::BulkString(b"rust".to_vec()),
-                Value::BulkString(b"content".to_vec()),
-                Value::BulkString(b"fn main() {}".to_vec()),
-            ]),
         ]);
         let result = parse_search_results(value);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("expected integer"));
+    }
+
+    #[test]
+    fn parse_search_results_returns_error_for_negative_count() {
+        let value = Value::Array(vec![
+            Value::Int(-1),
+        ]);
+        let result = parse_search_results(value);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("non-negative"));
     }
 
     #[test]
