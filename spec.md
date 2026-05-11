@@ -1,112 +1,177 @@
----
+# Project Specification: kt (Knowledge Transfer)
 
-# 📝 Project Specification: kt (Knowledge Transfer)
+## 1. Meta Information
 
-### **1. Meta Information**
-
-* **Project Name:** `kt`
-* **Description:** A local, privacy-first polyglot codebase RAG via MCP.
-* **Target Interface:** Oh My Pi (via standard MCP JSON-RPC protocol).
-* **Languages Supported (V1):** Rust, Go, Java.
-
----
-
-### **2. Executive Summary**
-
-**kt** is a local Retrieval-Augmented Generation (RAG) system designed to act as the ultimate knowledge transfer bridge between your local codebase and the Oh My Pi inference engine. By utilizing **Tree-sitter** for AST-based logical code chunking and **Redis Stack** for high-speed hybrid vector search, `kt` allows your local LLM to instantly query, understand, and reason about Rust, Go, and Java projects. The entire pipeline is exposed as a **Model Context Protocol (MCP) Server**, granting Oh My Pi autonomous tool-calling access to the local codebase.
+- **Project Name:** `kt`
+- **Description:** A local, privacy-first polyglot codebase RAG via MCP.
+- **Implementation Language:** Rust
+- **Key Crates:** `tokio` (async runtime), `rmcp` (MCP server), `redis` (Redis client), `tree-sitter` + language parsers (`tree-sitter-rust`, `tree-sitter-go`, `tree-sitter-java`), `ort` (ONNX Runtime), `tokenizers` (HuggingFace tokenizer), `git2` (libgit2 bindings), `clap` (CLI), `serde`/`serde_json` (serialization), `sha2` (hashing), `walkdir` (file traversal), `reqwest` (HTTP), `anyhow`/`thiserror` (error handling), `indicatif`/`console`/`crossterm` (terminal UI)
+- **Languages Supported (V1):** Rust, Go, Java
 
 ---
 
-### **3. Architecture & Data Flow**
+## 2. Executive Summary
+
+**kt** is a local Retrieval-Augmented Generation (RAG) system that acts as a knowledge transfer bridge between your local codebase and LLM inference engines. By utilizing **Tree-sitter** for AST-based logical code chunking, **ONNX Runtime** for local embeddings (all-MiniLM-L6-v2, 384-dimensional), and **Redis Stack** for high-speed hybrid vector search, kt allows LLMs to instantly query, understand, and reason about Rust, Go, and Java projects. The entire pipeline is exposed as an **MCP (Model Context Protocol) Server** via the `rmcp` crate, granting AI assistants autonomous tool-calling access to the local codebase. kt also provides a CLI for direct indexing, self-upgrade, and MCP harness configuration.
+
+---
+
+## 3. Architecture & Data Flow
 
 The system operates entirely on the local machine and is divided into three core layers:
 
-#### **A. The Indexing Engine (Write Path)**
+### A. The Indexing Engine (Write Path)
 
-* **File Discovery:** Scans the target workspace for `.rs`, `.go`, and `.java` files.
-* **AST Parser (Tree-sitter):** Slices files into semantic boundaries (e.g., functions, structs, impl blocks, classes) and injects parent metadata (like Java class annotations or Rust struct definitions) into the chunk context.
-* **Local Embeddings:** Passes the semantic chunks through `all-MiniLM-L6-v2` (via `sentence-transformers`) running on the local CPU to generate dense vectors.
-* **Redis Ingestion:** Stores the chunk text, metadata, and vector byte array in Redis Hashes.
+- **File Discovery:** Scans the target workspace for `.rs`, `.go`, and `.java` files using `walkdir`, filtering out common ignored directories (`target`, `vendor`, `.git`, `node_modules`, etc.).
+- **AST Parser (Tree-sitter):** Slices files into semantic boundaries (functions, structs, impl blocks, classes, methods, etc.) using language-specific Tree-sitter grammars. Injects parent metadata (e.g., impl block headers, class annotations) into child chunk context for richer embeddings.
+- **Local Embeddings:** Passes semantic chunks through `all-MiniLM-L6-v2` via ONNX Runtime (using the `ort` crate) running on CPU to generate 384-dimensional dense vectors. Uses mean pooling over token embeddings with attention masking, followed by L2 normalization.
+- **Redis Ingestion:** Stores chunk text, metadata, vectors, and file modification timestamps in Redis Hashes using pipeline batching.
 
-#### **B. The Storage Engine (Redis Stack)**
+### B. The Storage Engine (Redis Stack)
 
-* A single, unified Redis Index (`idx:kt_codebase`) handles all languages.
-* **Hybrid Search:** Combines Dense Vector Search (semantic intent, e.g., "how do we hash passwords") with BM25 Keyword Search (exact syntax, e.g., `BcryptHasher`).
+- **Main Index:** `idx:kt_codebase` on `kt:doc:*` hashes — handles all languages.
+- **Shadow Index:** `idx:kt_shadow` on `kt:shadow:*` hashes — ephemeral TTL-based index for PR/change workflows.
+- **Hybrid Search:** Combines Dense Vector Search (KNN, semantic intent) with BM25 Keyword Search (exact syntax). Uses Redis DIALECT 2 query syntax.
 
-#### **C. The Interface Layer (MCP Server)**
+### C. The Interface Layer (MCP Server + CLI)
 
-* A Python-based server implementing the `@modelcontextprotocol/sdk`.
-* Communicates with Oh My Pi via standard input/output (`stdio`).
+- **MCP Server:** Rust binary using `rmcp` crate, communicating via stdio JSON-RPC.
+- **CLI:** `clap`-based binary with commands: `serve`, `sync`, `upgrade`, `mcp setup/list/show/remove`.
+- **Sync Progress:** Terminal UI with progress bars and animations (when TTY detected).
 
 ---
 
-### **4. Redis Schema Design**
+## 4. Redis Schema Design
 
-All data is stored in Redis Hashes with the prefix `kt:doc:`. The schema for the RediSearch index is as follows:
+All data is stored in Redis Hashes with the prefix `kt:doc:`. The schema for the RediSearch index (`idx:kt_codebase`) is as follows:
 
 | Field Name | Type | Description |
-| --- | --- | --- |
-| `chunk_id` | `TAG` | Unique hash of `filepath + node_name`. |
+|---|---|---|
+| `chunk_id` | `TAG` | SHA-256 hash of `filepath \0 name \0 start_line`. |
 | `filepath` | `TEXT` | Repository-relative path (e.g., `src/main.rs`). |
-| `language` | `TAG` | Language filter (`rust`, `go`, `java`). |
-| `node_type` | `TAG` | AST node type (`function`, `class`, `struct`, `impl`). |
-| `content` | `TEXT` | The raw source code of the chunk + injected parent context. |
-| `embedding` | `VECTOR` | 384-dimensional `FLOAT32` vector (`FLAT` index) using `COSINE` distance. |
+| `language` | `TAG` | Language filter: `rust`, `go`, or `java`. |
+| `node_type` | `TAG` | Canonical AST type: `function`, `struct`, `enum`, `impl`, `trait`, `class`, `interface`, `constructor`, `type_alias`, `const`, `text_block`. |
+| `name` | `TEXT` | Extracted identifier (function/struct/class name). |
+| `signature` | `TEXT` | First-line signature for the node. |
+| `content` | `TEXT` | Raw source code of the chunk + injected parent context. |
+| `start_line` | `NUMERIC` | Start line number in the source file. |
+| `end_line` | `NUMERIC` | End line number in the source file. |
+| `parent_context` | `TEXT` | Container node header (first 3 lines for large containers, full text for small). |
+| `embedding` | `VECTOR` | 384-dimensional `FLOAT32` vector, `FLAT` index, `COSINE` distance. |
+
+An unindexed `mtime` field stores the file modification timestamp for incremental sync.
+
+The shadow index (`idx:kt_shadow`) has an identical schema on `kt:shadow:*` hashes. Each shadow key has a configurable TTL (default: 2 hours).
 
 ---
 
-### **5. Exposed MCP Tools**
+## 5. Exposed MCP Tools
 
-To make Oh My Pi autonomous, the `kt` MCP server exposes the following tools:
+The `kt` MCP server exposes 5 tools:
 
-1. **`kt_search` (Hybrid Knowledge Search)**
-* **Inputs:** `query` (string), `language` (optional string), `top_k` (optional int, default 3).
-* **Behavior:** Embeds the user query, executes a Redis Hybrid Search, and returns the top matching AST chunks wrapped in XML tags.
-* **Agent Prompt Trigger:** *"How does the Go service authenticate with the Java backend?"*
+### 1. `kt_search` (Hybrid Knowledge Search)
 
+- **Inputs:** `query` (string, required), `language` (optional string: `rust`/`go`/`java`), `top_k` (optional int, default 3, max 10), `headers_only` (optional bool).
+- **Behavior:** Embeds the query via ONNX Runtime, executes Redis hybrid search on main + shadow indexes, merges results (shadow takes priority over main chunks with the same ID), resolves one-hop parent context, returns top chunks as structured XML.
 
-2. **`kt_read_file` (Exact File Lookup)**
-* **Inputs:** `filepath` (string).
-* **Behavior:** Bypasses vector search. Queries Redis for all chunks matching the exact `filepath` and reconstructs the file.
-* **Agent Prompt Trigger:** *"Read the contents of `backend/src/main/java/com/kt/Auth.java`."*
+### 2. `kt_read_file` (Exact File Lookup)
 
+- **Inputs:** `filepath` (string, required).
+- **Behavior:** Bypasses vector search. Queries shadow index first, then main index for all chunks matching the filepath. Returns reconstructed file as structured XML.
 
-3. **`kt_sync` (Action Tool)**
-* **Inputs:** `directory_path` (string).
-* **Behavior:** Triggers the Tree-sitter pipeline to parse and embed any modified files in the given directory, updating the Redis index.
-* **Agent Prompt Trigger:** *"I just rewrote the parser module, update your index."*
+### 3. `kt_sync` (Directory Indexing)
 
+- **Inputs:** `directory_path` (string, required), `full` (optional bool).
+- **Behavior:** Triggers the sync pipeline — full re-index, git-aware partial (diff-based via `git2`), or mtime-based partial. Parses changed files, generates embeddings, updates Redis.
 
+### 4. `kt_git_status` (Repository Status)
 
----
+- **Inputs:** `directory_path` (string, required).
+- **Behavior:** Returns current branch, HEAD commit SHA, dirty state, and list of changed files as structured XML.
 
-### **6. Implementation Milestones**
+### 5. `kt_index_pr` (Shadow Index for PR Workflows)
 
-**Phase 1: Storage & Connectivity**
-
-* Deploy Redis Stack locally via Docker.
-* Define the `idx:kt_codebase` schema using the `redis-py` library.
-* Verify basic CRUD operations and vector search functionality with dummy data.
-
-**Phase 2: The `kt` Parsing Engine**
-
-* Integrate Python bindings for Tree-sitter (`tree-sitter-rust`, `tree-sitter-go`, `tree-sitter-java`).
-* Write extraction logic to pull semantic nodes and format them with their necessary parent context.
-* Integrate `sentence-transformers` and pipe the resulting vectors into Redis.
-
-**Phase 3: The `kt` MCP Server**
-
-* Implement the Python MCP SDK.
-* Wrap the Redis query and indexing logic into the `kt_search`, `kt_read_file`, and `kt_sync` tools.
-* Configure Oh My Pi to launch `kt` as an MCP subprocess.
+- **Inputs:** `directory_path` (string, required), `base_branch` (optional string, default `"main"`), `ttl_seconds` (optional u64, default 7200).
+- **Behavior:** Computes git diff against base branch, indexes changed files into the shadow index with TTL. Shadow chunks merge with main results in `kt_search`, taking priority over main chunks with the same ID.
 
 ---
 
-### **7. Known Risks & Mitigations**
+## 6. CLI Commands
 
-* **Risk:** *AST Parsing Failures on Incomplete Code.* If you are mid-edit and syntax is broken, Tree-sitter might fail to generate an AST.
-* **Mitigation:** The ingestion script will catch Tree-sitter exceptions and gracefully fall back to a basic text-splitter (chunking by line breaks) just to ensure the code remains searchable.
+```
+kt serve                          Start MCP server (stdio transport)
+kt sync <dir> [--full]            Index directory (partial by default)
+kt upgrade [--force] [--version]  Self-upgrade from GitHub releases
+kt mcp setup [--harness ...] [--global] [--create-agents]
+kt mcp list                       List detected MCP harnesses
+kt mcp show                       Show global configuration
+kt mcp remove <harness>...        Remove kt from harness config
+```
 
+---
 
-* **Risk:** *Context Window Saturation.* Over-fetching code chunks will blow out the local LLM's context window.
-* **Mitigation:** The `kt_search` tool will enforce a strict `top_k` limit and implement a hard token-truncation check before sending the payload back over the MCP protocol.
+## 7. Sync Strategies
+
+kt supports three sync strategies, selected automatically:
+
+- **Full Sync:** Discovers all supported files in the directory, removes existing chunks, re-parses and re-embeds everything.
+- **Git-Aware Partial Sync** (default for git repos): Compares the current HEAD commit SHA against the last synced commit. If unchanged, skips. If changed, computes a `git diff` tree-to-tree comparison via `git2`, indexes only changed files, and removes deleted files from the index.
+- **Mtime-Based Partial Sync** (non-git repos): Compares file modification timestamps against the stored `mtime` values, indexes only files with changed or new timestamps.
+
+The sync module (`src/sync.rs`) exposes a structured pipeline: `plan()` determines strategy and file set, `execute()` runs chunking/embedding/storage with a `SyncProgress` trait for UI feedback, and `finalize()` persists sync state (commit SHA or cleared state).
+
+---
+
+## 8. Implementation Milestones
+
+### Phase 1: Core Foundation
+
+- Rust project setup with `tokio`, `redis`, `clap`.
+- Redis CRUD operations, index creation, hybrid search.
+- ONNX Runtime embedding engine with `all-MiniLM-L6-v2`.
+- Basic CLI with `serve` and `sync` commands.
+
+### Phase 2: Parsing & Indexing
+
+- Tree-sitter integration for Rust, Go, and Java.
+- AST-based chunking with parent context injection.
+- File discovery with ignored directory filtering.
+- Batch embedding and Redis pipeline ingestion.
+
+### Phase 3: MCP Server
+
+- `rmcp`-based MCP server with `kt_search`, `kt_read_file`, and `kt_sync` tools.
+- XML response formatting with content truncation (8,000 chars per chunk, 32,000 chars total response).
+- `headers_only` mode for token savings.
+
+### Phase 4: Git Integration
+
+- `git2`-based partial sync with commit tracking.
+- Diff-based change detection for incremental indexing.
+- `kt_git_status` tool for repository status.
+
+### Phase 5: PR Workflow
+
+- Shadow index (`idx:kt_shadow`) with per-key TTL.
+- `kt_index_pr` tool for indexing changed files from a branch diff.
+- Shadow/main result merging with deduplication (shadow takes priority).
+
+### Phase 6: Distribution
+
+- Self-upgrade from GitHub releases via `self-replace`.
+- Interactive MCP harness setup (OpenCode, Claude Desktop, Cline, Continue, Pi).
+- Global configuration management (`~/.config/kt/config.json`).
+- Terminal sync progress UI with progress bars.
+
+---
+
+## 9. Known Risks & Mitigations
+
+- **Risk:** *AST Parsing Failures on Incomplete Code.* If you are mid-edit and syntax is broken, Tree-sitter may fail to generate a complete AST.
+  - **Mitigation:** Falls back to line-based chunking (30-line `text_block` chunks) to ensure the code remains searchable.
+
+- **Risk:** *Context Window Saturation.* Over-fetching code chunks will blow out the LLM's context window.
+  - **Mitigation:** Per-chunk content is truncated at 8,000 characters. Total response is capped at 32,000 characters. `headers_only` mode returns only signatures for token savings.
+
+- **Risk:** *ONNX Runtime Compatibility.* ONNX Runtime requires native libraries that may not be available on all platforms.
+  - **Mitigation:** The `ort` crate with default features downloads pre-built ONNX Runtime libraries. Builds are tested on linux-amd64 and darwin-arm64.
