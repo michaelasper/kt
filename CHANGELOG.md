@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.5.0 (2026-05-11)
+
+* style: apply cargo fmt ([5a37e65](https://github.com/michaelasper/kt/commit/5a37e65))
+* docs: rewrite spec.md to accurately reflect Rust implementation (#3) ([7243843](https://github.com/michaelasper/kt/commit/7243843)), closes [#3](https://github.com/michaelasper/kt/issues/3)
+* docs: sync plan and design docs with actual implementation ([a23ce68](https://github.com/michaelasper/kt/commit/a23ce68))
+* docs: update AGENTS.md with all 16 modules and 5 MCP tools (#3) ([43edf13](https://github.com/michaelasper/kt/commit/43edf13)), closes [#3](https://github.com/michaelasper/kt/issues/3)
+* refactor: use shared sync pipeline in main.rs and mcp.rs ([4c2ba38](https://github.com/michaelasper/kt/commit/4c2ba38))
+* refactor(sync): move deleted-file cleanup into execute(), take finish(self) by value ([5ca389d](https://github.com/michaelasper/kt/commit/5ca389d))
+* feat(sync): add sync module with SyncStrategy, SyncPlan, execute, and finalize ([48b05a1](https://github.com/michaelasper/kt/commit/48b05a1))
+
 ## <small>0.4.1 (2026-05-11)</small>
 
 * Merge remote-tracking branch 'origin/main' ([c050b4e](https://github.com/michaelasper/kt/commit/c050b4e))
