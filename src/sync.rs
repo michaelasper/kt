@@ -191,7 +191,7 @@ pub async fn execute(
                 let mtimes = vec![mtime; chunks.len()];
 
                 if let Err(e) = storage
-                    .store_chunks_batch_with_mtimes(&chunks, &embeddings, &mtimes)
+                    .store_chunks_batch(&chunks, &embeddings, Some(&mtimes))
                     .await
                 {
                     tracing::warn!("Failed to store chunks for {}: {e}", file.relative_path);
