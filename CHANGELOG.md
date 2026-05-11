@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.3.3 (2026-05-11)</small>
+
+* fix: format test assertions per rustfmt ([03427f6](https://github.com/michaelasper/kt/commit/03427f6))
+* fix: include start_line and separators in chunk ID generation (#2) ([324e39f](https://github.com/michaelasper/kt/commit/324e39f)), closes [#2](https://github.com/michaelasper/kt/issues/2)
+* fix: remove needless borrow flagged by clippy ([7b9b596](https://github.com/michaelasper/kt/commit/7b9b596))
+* refactor: zero-alloc start_line encoding and add boundary test (#2) ([3f83388](https://github.com/michaelasper/kt/commit/3f83388)), closes [#2](https://github.com/michaelasper/kt/issues/2)
+* docs: add spec for chunk ID collision fix (#2) ([a61863d](https://github.com/michaelasper/kt/commit/a61863d)), closes [#2](https://github.com/michaelasper/kt/issues/2)
+
 ## <small>0.3.2 (2026-05-10)</small>
 
 * fix(ci): defer release publication until build artifacts are ready ([d84522f](https://github.com/michaelasper/kt/commit/d84522f))
