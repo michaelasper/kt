@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.5.3 (2026-05-11)</small>
+
+* fix(sync): save last synced commit after full sync so next sync is incremental ([db7648f](https://github.com/michaelasper/kt/commit/db7648f))
+
 ## <small>0.5.2 (2026-05-11)</small>
 
 * perf: batch lookup_chunks_by_name FT.SEARCH calls via Redis pipeline ([aad386d](https://github.com/michaelasper/kt/commit/aad386d)), closes [#24](https://github.com/michaelasper/kt/issues/24)
