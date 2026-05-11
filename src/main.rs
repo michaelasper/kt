@@ -95,26 +95,20 @@ async fn main() -> anyhow::Result<()> {
 }
 
 struct CliProgress {
-    ui: Option<kt::sync_ui::SyncUI>,
+    ui: kt::sync_ui::SyncUI,
 }
 
 impl kt::sync::SyncProgress for CliProgress {
     fn start_file(&mut self, path: &str, index: usize) {
-        if let Some(ui) = &mut self.ui {
-            ui.start_file(path, index);
-        }
+        self.ui.start_file(path, index);
     }
 
     fn finish_file(&mut self, path: &str, chunks: usize) {
-        if let Some(ui) = &mut self.ui {
-            ui.finish_file(path, chunks);
-        }
+        self.ui.finish_file(path, chunks);
     }
 
-    fn finish(&mut self, files: usize, chunks: usize) {
-        if let Some(ui) = self.ui.take() {
-            ui.finish(files, chunks);
-        }
+    fn finish(self, files: usize, chunks: usize) {
+        self.ui.finish(files, chunks);
     }
 }
 
@@ -159,10 +153,10 @@ async fn run_sync(
     }
 
     let mut progress = CliProgress {
-        ui: Some(kt::sync_ui::SyncUI::new(plan.files.len())),
+        ui: kt::sync_ui::SyncUI::new(plan.files.len()),
     };
 
-    let stats = kt::sync::execute(&plan.files, &storage, &engine, &mut progress).await?;
+    let stats = kt::sync::execute(&plan, &storage, &engine, &mut progress).await?;
     kt::sync::finalize(directory, &plan.strategy, &storage).await?;
 
     progress.finish(stats.total_files, stats.total_chunks);

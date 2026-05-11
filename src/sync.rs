@@ -16,6 +16,7 @@ pub enum SyncStrategy {
 pub struct SyncPlan {
     pub files: Vec<DiscoveredFile>,
     pub strategy: SyncStrategy,
+    pub deleted_paths: Vec<String>,
 }
 
 pub struct SyncStats {
@@ -27,7 +28,9 @@ pub struct SyncStats {
 pub trait SyncProgress: Send + Sync {
     fn start_file(&mut self, path: &str, index: usize);
     fn finish_file(&mut self, path: &str, chunks: usize);
-    fn finish(&mut self, files: usize, chunks: usize);
+    fn finish(self, files: usize, chunks: usize)
+    where
+        Self: Sized;
 }
 
 pub struct NoopProgress;
@@ -35,7 +38,7 @@ pub struct NoopProgress;
 impl SyncProgress for NoopProgress {
     fn start_file(&mut self, _path: &str, _index: usize) {}
     fn finish_file(&mut self, _path: &str, _chunks: usize) {}
-    fn finish(&mut self, _files: usize, _chunks: usize) {}
+    fn finish(self, _files: usize, _chunks: usize) {}
 }
 
 pub async fn plan(root: &Path, storage: &Storage, full: bool) -> anyhow::Result<SyncPlan> {
@@ -44,6 +47,7 @@ pub async fn plan(root: &Path, storage: &Storage, full: bool) -> anyhow::Result<
         return Ok(SyncPlan {
             files: discovery::discover_files(root),
             strategy: SyncStrategy::Full,
+            deleted_paths: Vec::new(),
         });
     }
 
@@ -58,6 +62,7 @@ pub async fn plan(root: &Path, storage: &Storage, full: bool) -> anyhow::Result<
                 return Ok(SyncPlan {
                     files: discovery::discover_files(root),
                     strategy: SyncStrategy::Full,
+                    deleted_paths: Vec::new(),
                 });
             }
         };
@@ -73,6 +78,7 @@ pub async fn plan(root: &Path, storage: &Storage, full: bool) -> anyhow::Result<
                 Ok(SyncPlan {
                     files: discovery::discover_files(root),
                     strategy: SyncStrategy::Full,
+                    deleted_paths: Vec::new(),
                 })
             }
             Some(last) if last == current_commit => {
@@ -83,6 +89,7 @@ pub async fn plan(root: &Path, storage: &Storage, full: bool) -> anyhow::Result<
                         prev_commit: last,
                         current_commit,
                     },
+                    deleted_paths: Vec::new(),
                 })
             }
             Some(last) => {
@@ -94,15 +101,11 @@ pub async fn plan(root: &Path, storage: &Storage, full: bool) -> anyhow::Result<
 
                 match git::get_diff_files(root, &last) {
                     Ok(changed_paths) => {
+                        let mut deleted_paths = Vec::new();
                         for path in &changed_paths {
                             if !root.join(path).exists() {
-                                tracing::info!("Removing deleted file from index: {}", path);
-                                if let Err(e) = storage.remove_file_chunks(path).await {
-                                    tracing::warn!(
-                                        "Failed to remove chunks for deleted file {}: {e}",
-                                        path
-                                    );
-                                }
+                                tracing::info!("Deleted file detected: {}", path);
+                                deleted_paths.push(path.clone());
                             }
                         }
 
@@ -129,6 +132,7 @@ pub async fn plan(root: &Path, storage: &Storage, full: bool) -> anyhow::Result<
                                 prev_commit: last,
                                 current_commit,
                             },
+                            deleted_paths,
                         })
                     }
                     Err(e) => {
@@ -138,6 +142,7 @@ pub async fn plan(root: &Path, storage: &Storage, full: bool) -> anyhow::Result<
                         Ok(SyncPlan {
                             files: discovery::discover_files(root),
                             strategy: SyncStrategy::Full,
+                            deleted_paths: Vec::new(),
                         })
                     }
                 }
@@ -150,21 +155,29 @@ pub async fn plan(root: &Path, storage: &Storage, full: bool) -> anyhow::Result<
         Ok(SyncPlan {
             files: discovery::discover_modified_files(root, &known_mtimes),
             strategy: SyncStrategy::PartialMtime,
+            deleted_paths: Vec::new(),
         })
     }
 }
 
 pub async fn execute(
-    files: &[DiscoveredFile],
+    plan: &SyncPlan,
     storage: &Storage,
     engine: &crate::embedding::EmbeddingEngine,
     progress: &mut dyn SyncProgress,
 ) -> anyhow::Result<SyncStats> {
+    for path in &plan.deleted_paths {
+        tracing::info!("Removing deleted file from index: {}", path);
+        if let Err(e) = storage.remove_file_chunks(path).await {
+            tracing::warn!("Failed to remove chunks for deleted file {}: {e}", path);
+        }
+    }
+
     let mut total_chunks = 0usize;
     let mut total_files = 0usize;
     let mut errors = 0usize;
 
-    for (i, file) in files.iter().enumerate() {
+    for (i, file) in plan.files.iter().enumerate() {
         let chunks = crate::indexing::parse_file(&file.path, &file.relative_path, file.language);
         if chunks.is_empty() {
             continue;
