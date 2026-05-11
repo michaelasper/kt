@@ -71,7 +71,7 @@ impl Chunk {
         hasher.update(b"\x00");
         hasher.update(name.as_bytes());
         hasher.update(b"\x00");
-        hasher.update(start_line.to_string().as_bytes());
+        hasher.update(&start_line.to_be_bytes());
         let result = hasher.finalize();
         hex::encode(result)
     }
@@ -113,5 +113,12 @@ mod tests {
         let id_a = Chunk::generate_id("fo", "obar", 1);
         let id_b = Chunk::generate_id("foob", "ar", 1);
         assert_ne!(id_a, id_b, "boundary-crossing field values must produce different IDs");
+    }
+
+    #[test]
+    fn generate_id_name_line_boundary_safety() {
+        let id_a = Chunk::generate_id("a", "b1", 0);
+        let id_b = Chunk::generate_id("a", "b", 10);
+        assert_ne!(id_a, id_b, "name/start_line boundary must be separator-safe");
     }
 }
