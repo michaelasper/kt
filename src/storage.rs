@@ -843,10 +843,7 @@ impl Storage {
 fn parse_search_results(value: redis::Value) -> anyhow::Result<Vec<SearchResult>> {
     let arr = match value {
         redis::Value::Array(a) => a,
-        other => anyhow::bail!(
-            "FT.SEARCH expected array response, got {:?}",
-            other
-        ),
+        other => anyhow::bail!("FT.SEARCH expected array response, got {:?}", other),
     };
 
     if arr.is_empty() {
@@ -1040,7 +1037,10 @@ mod tests {
         let value = Value::Okay;
         let result = parse_search_results(value);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("expected array response"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("expected array response"));
     }
 
     #[test]
@@ -1052,9 +1052,7 @@ mod tests {
 
     #[test]
     fn parse_search_results_returns_error_for_bulk_string_count() {
-        let value = Value::Array(vec![
-            Value::BulkString(b"2".to_vec()),
-        ]);
+        let value = Value::Array(vec![Value::BulkString(b"2".to_vec())]);
         let result = parse_search_results(value);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("expected integer"));
@@ -1062,9 +1060,7 @@ mod tests {
 
     #[test]
     fn parse_search_results_returns_error_for_negative_count() {
-        let value = Value::Array(vec![
-            Value::Int(-1),
-        ]);
+        let value = Value::Array(vec![Value::Int(-1)]);
         let result = parse_search_results(value);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("non-negative"));
@@ -1072,9 +1068,7 @@ mod tests {
 
     #[test]
     fn parse_search_results_returns_error_for_unexpected_type_count() {
-        let value = Value::Array(vec![
-            Value::Nil,
-        ]);
+        let value = Value::Array(vec![Value::Nil]);
         let result = parse_search_results(value);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("expected integer"));
@@ -1115,9 +1109,7 @@ mod tests {
 
     #[test]
     fn parse_search_results_returns_empty_when_count_is_zero() {
-        let value = Value::Array(vec![
-            Value::Int(0),
-        ]);
+        let value = Value::Array(vec![Value::Int(0)]);
         let result = parse_search_results(value).unwrap();
         assert!(result.is_empty());
     }
