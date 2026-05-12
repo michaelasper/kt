@@ -16,6 +16,21 @@ fn mcp_error(msg: impl std::fmt::Display) -> rmcp::ErrorData {
     rmcp::ErrorData::internal_error(format!("{msg}"), None)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToolWarning {
+    source: &'static str,
+    message: String,
+}
+
+impl ToolWarning {
+    fn shadow_index(message: impl Into<String>) -> Self {
+        Self {
+            source: "shadow_index",
+            message: message.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct KtServer {
     inner: Arc<KtServerInner>,
@@ -162,7 +177,8 @@ impl KtServer {
             .await
             .map_err(mcp_error)?;
 
-        let shadow_results = storage
+        let mut warnings = Vec::new();
+        let shadow_results = match storage
             .search_shadow_scoped(
                 &query_embedding,
                 &params.query,
@@ -171,7 +187,15 @@ impl KtServer {
                 top_k,
             )
             .await
-            .unwrap_or_default();
+        {
+            Ok(results) => results,
+            Err(error) => {
+                let message = format!("Shadow search failed: {error}");
+                warn!(error = %error, "Shadow search failed");
+                warnings.push(ToolWarning::shadow_index(message));
+                Vec::new()
+            }
+        };
 
         let shadow_ids: std::collections::HashSet<String> =
             shadow_results.iter().map(|r| r.chunk_id.clone()).collect();
@@ -185,7 +209,7 @@ impl KtServer {
 
         let one_hop = resolve_one_hop_context(&storage, &results).await;
 
-        let xml = format_search_results(&results, &params.query, headers_only, &one_hop);
+        let xml = format_search_results(&results, &params.query, headers_only, &one_hop, &warnings);
         Ok(CallToolResult::success(vec![Content::text(xml)]))
     }
 
@@ -208,10 +232,19 @@ impl KtServer {
         .map_err(mcp_error)?;
         let codebase_id = codebase.as_ref().map(|c| c.codebase_id.as_str());
 
-        let shadow_results = storage
+        let mut warnings = Vec::new();
+        let shadow_results = match storage
             .read_shadow_file_chunks_scoped(&params.filepath, codebase_id)
             .await
-            .unwrap_or_default();
+        {
+            Ok(results) => results,
+            Err(error) => {
+                let message = format!("Shadow file read failed for {}: {error}", params.filepath);
+                warn!(filepath = %params.filepath, error = %error, "Shadow file read failed");
+                warnings.push(ToolWarning::shadow_index(message));
+                Vec::new()
+            }
+        };
 
         let main_results = storage
             .read_file_chunks_scoped(&params.filepath, codebase_id)
@@ -227,14 +260,19 @@ impl KtServer {
         results.extend(shadow_results);
 
         if results.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "<error>No chunks found for file: {}</error>",
-                params.filepath
-            ))]));
+            let xml = if warnings.is_empty() {
+                format!(
+                    "<error>No chunks found for file: {}</error>",
+                    xml_escape(&params.filepath)
+                )
+            } else {
+                format_file_not_found(&params.filepath, &warnings)
+            };
+            return Ok(CallToolResult::success(vec![Content::text(xml)]));
         }
 
         let results = deduplicate_results(results);
-        let xml = format_file_results(&results, &params.filepath, false);
+        let xml = format_file_results(&results, &params.filepath, false, &warnings);
         Ok(CallToolResult::success(vec![Content::text(xml)]))
     }
 
@@ -705,9 +743,11 @@ fn format_search_results(
     query: &str,
     headers_only: bool,
     one_hop: &std::collections::HashMap<(String, String), SearchResult>,
+    warnings: &[ToolWarning],
 ) -> String {
     let mut xml = format!("<search_results query=\"{}\">\n", xml_escape(query));
     let mut total_len = 0usize;
+    append_warnings_xml(&mut xml, warnings);
 
     for result in results {
         let content = if headers_only {
@@ -755,8 +795,14 @@ fn format_search_results(
     xml
 }
 
-fn format_file_results(results: &[SearchResult], filepath: &str, headers_only: bool) -> String {
+fn format_file_results(
+    results: &[SearchResult],
+    filepath: &str,
+    headers_only: bool,
+    warnings: &[ToolWarning],
+) -> String {
     let mut xml = format!("<files filepath=\"{}\">\n", xml_escape(filepath));
+    append_warnings_xml(&mut xml, warnings);
     let mut ordered = results.iter().collect::<Vec<_>>();
     ordered.sort_by(|a, b| {
         (&a.codebase_id, a.start_line, a.end_line, &a.chunk_id).cmp(&(
@@ -806,6 +852,33 @@ fn format_file_results(results: &[SearchResult], filepath: &str, headers_only: b
     }
     xml.push_str("</files>");
     xml
+}
+
+fn format_file_not_found(filepath: &str, warnings: &[ToolWarning]) -> String {
+    let mut xml = format!("<files filepath=\"{}\">\n", xml_escape(filepath));
+    append_warnings_xml(&mut xml, warnings);
+    xml.push_str(&format!(
+        "  <error>No chunks found for file: {}</error>\n",
+        xml_escape(filepath)
+    ));
+    xml.push_str("</files>");
+    xml
+}
+
+fn append_warnings_xml(xml: &mut String, warnings: &[ToolWarning]) {
+    if warnings.is_empty() {
+        return;
+    }
+
+    xml.push_str("  <warnings>\n");
+    for warning in warnings {
+        xml.push_str(&format!(
+            "    <warning source=\"{}\">{}</warning>\n",
+            xml_escape(warning.source),
+            xml_escape(&warning.message)
+        ));
+    }
+    xml.push_str("  </warnings>\n");
 }
 
 fn xml_escape(s: &str) -> String {
@@ -903,7 +976,7 @@ mod tests {
             file_result("earlier", Some(2), Some(4)),
         ];
 
-        let xml = format_file_results(&results, "src/example.rs", false);
+        let xml = format_file_results(&results, "src/example.rs", false, &[]);
 
         let earlier = xml.find("name_earlier").unwrap();
         let later = xml.find("name_later").unwrap();
@@ -921,11 +994,52 @@ mod tests {
         let results = vec![sample_result("result", 0.1)];
         let one_hop = std::collections::HashMap::new();
 
-        let xml = format_search_results(&results, "query", false, &one_hop);
+        let xml = format_search_results(&results, "query", false, &one_hop, &[]);
 
         assert!(xml.contains("codebase_id=\"codebase-a\""));
         assert!(xml.contains("codebase_alias=\"alpha\""));
         assert!(xml.contains("root_path=\"/tmp/alpha\""));
         assert!(xml.contains("filepath=\"src/example.rs\""));
+    }
+
+    #[test]
+    fn test_format_search_results_emits_shadow_warnings() {
+        let one_hop = std::collections::HashMap::new();
+        let warnings = vec![ToolWarning::shadow_index(
+            "Shadow search failed: redis <down> & retry",
+        )];
+
+        let xml = format_search_results(&[], "query", false, &one_hop, &warnings);
+
+        assert!(xml.contains(
+            "<warning source=\"shadow_index\">Shadow search failed: redis &lt;down&gt; &amp; retry</warning>"
+        ));
+    }
+
+    #[test]
+    fn test_format_file_results_emits_shadow_warnings() {
+        let warnings = vec![ToolWarning::shadow_index(
+            "Shadow file read failed: redis <down> & retry",
+        )];
+
+        let xml = format_file_results(&[], "src/example.rs", false, &warnings);
+
+        assert!(xml.contains(
+            "<warning source=\"shadow_index\">Shadow file read failed: redis &lt;down&gt; &amp; retry</warning>"
+        ));
+    }
+
+    #[test]
+    fn test_format_file_not_found_preserves_shadow_warnings() {
+        let warnings = vec![ToolWarning::shadow_index(
+            "Shadow file read failed: redis down",
+        )];
+
+        let xml = format_file_not_found("src/example.rs", &warnings);
+
+        assert!(xml.contains(
+            "<warning source=\"shadow_index\">Shadow file read failed: redis down</warning>"
+        ));
+        assert!(xml.contains("<error>No chunks found for file: src/example.rs</error>"));
     }
 }

@@ -6,7 +6,7 @@ use crate::{Chunk, Codebase, Config, Language, SearchResult};
 use redis::cmd;
 use std::collections::HashMap;
 use std::path::Path;
-use tracing::info;
+use tracing::{debug, info};
 
 pub use search::parse_search_results;
 
@@ -211,16 +211,18 @@ impl Storage {
         top_k: usize,
     ) -> anyhow::Result<Vec<SearchResult>> {
         let mut conn = self.connection().await?;
-        let mut results = search::hybrid_search_impl(
-            &mut conn,
-            index::SHADOW_INDEX_NAME,
-            query_embedding,
-            query_text,
-            language,
-            None,
-            top_k,
-        )
-        .await?;
+        let mut results = shadow_index_or_empty(
+            search::hybrid_search_impl(
+                &mut conn,
+                index::SHADOW_INDEX_NAME,
+                query_embedding,
+                query_text,
+                language,
+                None,
+                top_k,
+            )
+            .await,
+        )?;
         self.hydrate_codebase_metadata(&mut conn, &mut results)
             .await?;
         Ok(results)
@@ -235,16 +237,18 @@ impl Storage {
         top_k: usize,
     ) -> anyhow::Result<Vec<SearchResult>> {
         let mut conn = self.connection().await?;
-        let mut results = search::hybrid_search_impl(
-            &mut conn,
-            index::SHADOW_INDEX_NAME,
-            query_embedding,
-            query_text,
-            language,
-            codebase_id,
-            top_k,
-        )
-        .await?;
+        let mut results = shadow_index_or_empty(
+            search::hybrid_search_impl(
+                &mut conn,
+                index::SHADOW_INDEX_NAME,
+                query_embedding,
+                query_text,
+                language,
+                codebase_id,
+                top_k,
+            )
+            .await,
+        )?;
         self.hydrate_codebase_metadata(&mut conn, &mut results)
             .await?;
         Ok(results)
@@ -255,9 +259,10 @@ impl Storage {
         filepath: &str,
     ) -> anyhow::Result<Vec<SearchResult>> {
         let mut conn = self.connection().await?;
-        let mut results =
+        let mut results = shadow_index_or_empty(
             search::read_file_chunks_impl(&mut conn, index::SHADOW_INDEX_NAME, filepath, None)
-                .await?;
+                .await,
+        )?;
         self.hydrate_codebase_metadata(&mut conn, &mut results)
             .await?;
         Ok(results)
@@ -269,13 +274,15 @@ impl Storage {
         codebase_id: Option<&str>,
     ) -> anyhow::Result<Vec<SearchResult>> {
         let mut conn = self.connection().await?;
-        let mut results = search::read_file_chunks_impl(
-            &mut conn,
-            index::SHADOW_INDEX_NAME,
-            filepath,
-            codebase_id,
-        )
-        .await?;
+        let mut results = shadow_index_or_empty(
+            search::read_file_chunks_impl(
+                &mut conn,
+                index::SHADOW_INDEX_NAME,
+                filepath,
+                codebase_id,
+            )
+            .await,
+        )?;
         self.hydrate_codebase_metadata(&mut conn, &mut results)
             .await?;
         Ok(results)
@@ -728,5 +735,54 @@ impl Storage {
         }
 
         Ok(())
+    }
+}
+
+fn shadow_index_or_empty(
+    result: anyhow::Result<Vec<SearchResult>>,
+) -> anyhow::Result<Vec<SearchResult>> {
+    match result {
+        Ok(results) => Ok(results),
+        Err(error) if is_missing_shadow_index(&error) => {
+            debug!(
+                index = index::SHADOW_INDEX_NAME,
+                "Shadow index is not present; treating shadow overlay as empty"
+            );
+            Ok(Vec::new())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn is_missing_shadow_index(error: &anyhow::Error) -> bool {
+    match error.downcast_ref::<redis::RedisError>() {
+        Some(redis_error) => index::is_index_not_found_error(redis_error),
+        None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use redis::{ErrorKind, RedisError};
+
+    #[test]
+    fn shadow_index_or_empty_returns_empty_when_shadow_index_is_missing() {
+        let error: anyhow::Error =
+            RedisError::from((ErrorKind::ResponseError, "Unknown Index name")).into();
+
+        let results = shadow_index_or_empty(Err(error)).unwrap();
+
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn shadow_index_or_empty_preserves_non_missing_index_errors() {
+        let error: anyhow::Error =
+            RedisError::from((ErrorKind::ResponseError, "syntax error")).into();
+
+        let result = shadow_index_or_empty(Err(error));
+
+        assert!(result.is_err());
     }
 }
