@@ -51,6 +51,7 @@ fn build_schema_args(include_mtime: bool) -> Vec<&'static str> {
         "TEXT",
         "start_line",
         "NUMERIC",
+        "SORTABLE",
         "end_line",
         "NUMERIC",
         "parent_context",

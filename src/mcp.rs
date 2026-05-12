@@ -632,17 +632,29 @@ fn format_search_results(
 
 fn format_file_results(results: &[SearchResult], filepath: &str, headers_only: bool) -> String {
     let mut xml = format!("<file filepath=\"{}\">\n", xml_escape(filepath));
-    for result in results {
+    let mut ordered = results.iter().collect::<Vec<_>>();
+    ordered.sort_by(|a, b| {
+        (a.start_line, a.end_line, &a.chunk_id).cmp(&(b.start_line, b.end_line, &b.chunk_id))
+    });
+
+    for result in ordered {
         let content = if headers_only {
             xml_escape(&result.signature)
         } else {
             xml_escape(&result.content)
         };
+        let line_attrs = match (result.start_line, result.end_line) {
+            (Some(start_line), Some(end_line)) => {
+                format!(" start_line=\"{}\" end_line=\"{}\"", start_line, end_line)
+            }
+            _ => String::new(),
+        };
         xml.push_str(&format!(
-            "  <chunk type=\"{}\" name=\"{}\" signature=\"{}\">\n    {}\n  </chunk>\n",
+            "  <chunk type=\"{}\" name=\"{}\" signature=\"{}\"{}>\n    {}\n  </chunk>\n",
             xml_escape(&result.node_type),
             xml_escape(&result.name),
             xml_escape(&result.signature),
+            line_attrs,
             content,
         ));
     }
@@ -672,6 +684,28 @@ mod tests {
             content: String::new(),
             parent_context: None,
             score,
+            start_line: None,
+            end_line: None,
+        }
+    }
+
+    fn file_result(
+        chunk_id: &str,
+        start_line: Option<usize>,
+        end_line: Option<usize>,
+    ) -> SearchResult {
+        SearchResult {
+            chunk_id: chunk_id.to_string(),
+            filepath: "src/example.rs".to_string(),
+            language: Language::Rust,
+            node_type: "function".to_string(),
+            name: format!("name_{chunk_id}"),
+            signature: format!("fn name_{chunk_id}()"),
+            content: format!("fn name_{chunk_id}() {{}}"),
+            parent_context: None,
+            score: 0.0,
+            start_line,
+            end_line,
         }
     }
 
@@ -708,5 +742,21 @@ mod tests {
             .map(|r| r.chunk_id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["a", "c", "b"]);
+    }
+
+    #[test]
+    fn test_format_file_results_orders_by_line_range_and_emits_line_attributes() {
+        let results = vec![
+            file_result("later", Some(10), Some(12)),
+            file_result("earlier", Some(2), Some(4)),
+        ];
+
+        let xml = format_file_results(&results, "src/example.rs", false);
+
+        let earlier = xml.find("name_earlier").unwrap();
+        let later = xml.find("name_later").unwrap();
+        assert!(earlier < later);
+        assert!(xml.contains("start_line=\"2\" end_line=\"4\""));
+        assert!(xml.contains("start_line=\"10\" end_line=\"12\""));
     }
 }

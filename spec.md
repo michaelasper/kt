@@ -54,8 +54,8 @@ All data is stored in Redis Hashes with the prefix `kt:doc:`. The schema for the
 | `name` | `TEXT` | Extracted identifier (function/struct/class name). |
 | `signature` | `TEXT` | First-line signature for the node. |
 | `content` | `TEXT` | Raw source code of the chunk + injected parent context. |
-| `start_line` | `NUMERIC` | Start line number in the source file. |
-| `end_line` | `NUMERIC` | End line number in the source file. |
+| `start_line` | `NUMERIC SORTABLE` | Zero-based start line number in the source file. |
+| `end_line` | `NUMERIC` | Zero-based end line number in the source file. |
 | `parent_context` | `TEXT` | Container node header (first 3 lines for large containers, full text for small). |
 | `embedding` | `VECTOR` | 384-dimensional `FLOAT32` vector, `FLAT` index, `COSINE` distance. |
 
@@ -77,7 +77,7 @@ The `kt` MCP server exposes 5 tools:
 ### 2. `kt_read_file` (Exact File Lookup)
 
 - **Inputs:** `filepath` (string, required).
-- **Behavior:** Bypasses vector search. Queries shadow index first, then main index for all chunks matching the filepath. Returns reconstructed file as structured XML.
+- **Behavior:** Bypasses vector search. Queries shadow index first, then main index for all chunks matching the filepath. Returns chunks in source order as structured XML, including zero-based `start_line` and `end_line` attributes when line metadata is available.
 
 ### 3. `kt_sync` (Directory Indexing)
 

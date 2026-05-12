@@ -1,15 +1,42 @@
 use crate::{Language, SearchResult};
-use redis::cmd;
+use redis::{cmd, Cmd, Pipeline};
+use std::cmp::Ordering;
 use tracing::{debug, warn};
 
+const SEARCH_RETURN_FIELDS: [&str; 10] = [
+    "chunk_id",
+    "filepath",
+    "language",
+    "node_type",
+    "name",
+    "signature",
+    "content",
+    "parent_context",
+    "start_line",
+    "end_line",
+];
+const READ_FILE_PAGE_SIZE: usize = 1000;
+
+struct SearchPage {
+    total_count: usize,
+    results: Vec<SearchResult>,
+}
+
 pub fn parse_search_results(value: redis::Value) -> anyhow::Result<Vec<SearchResult>> {
+    Ok(parse_search_page(value)?.results)
+}
+
+fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
     let arr = match value {
         redis::Value::Array(a) => a,
         other => anyhow::bail!("FT.SEARCH expected array response, got {:?}", other),
     };
 
     if arr.is_empty() {
-        return Ok(Vec::new());
+        return Ok(SearchPage {
+            total_count: 0,
+            results: Vec::new(),
+        });
     }
 
     let total_count = match &arr[0] {
@@ -29,7 +56,10 @@ pub fn parse_search_results(value: redis::Value) -> anyhow::Result<Vec<SearchRes
     };
 
     if total_count == 0 {
-        return Ok(Vec::new());
+        return Ok(SearchPage {
+            total_count,
+            results: Vec::new(),
+        });
     }
 
     let mut results = Vec::new();
@@ -46,28 +76,68 @@ pub fn parse_search_results(value: redis::Value) -> anyhow::Result<Vec<SearchRes
         let mut content = String::new();
         let mut parent_context: Option<String> = None;
         let mut score = 0.0f64;
+        let mut start_line: Option<usize> = None;
+        let mut end_line: Option<usize> = None;
 
         if let redis::Value::Array(field_pairs) = fields {
             let mut j = 0;
             while j + 1 < field_pairs.len() {
-                if let (redis::Value::BulkString(key_bytes), redis::Value::BulkString(val_bytes)) =
-                    (&field_pairs[j], &field_pairs[j + 1])
-                {
+                if let redis::Value::BulkString(key_bytes) = &field_pairs[j] {
                     let key = String::from_utf8_lossy(key_bytes);
-                    let val = String::from_utf8_lossy(val_bytes);
                     match key.as_ref() {
-                        "chunk_id" => chunk_id = val.into_owned(),
-                        "filepath" => filepath = val.into_owned(),
-                        "language" => language = parse_language(&val),
-                        "node_type" => node_type = val.into_owned(),
-                        "name" => name = val.into_owned(),
-                        "signature" => signature = val.into_owned(),
-                        "content" => content = val.into_owned(),
-                        "parent_context" if !val.is_empty() => {
-                            parent_context = Some(val.into_owned());
+                        "chunk_id" => {
+                            if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
+                                chunk_id = val;
+                            }
+                        }
+                        "filepath" => {
+                            if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
+                                filepath = val;
+                            }
+                        }
+                        "language" => {
+                            if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
+                                language = parse_language(&val);
+                            }
+                        }
+                        "node_type" => {
+                            if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
+                                node_type = val;
+                            }
+                        }
+                        "name" => {
+                            if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
+                                name = val;
+                            }
+                        }
+                        "signature" => {
+                            if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
+                                signature = val;
+                            }
+                        }
+                        "content" => {
+                            if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
+                                content = val;
+                            }
+                        }
+                        "parent_context" => {
+                            if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
+                                if !val.is_empty() {
+                                    parent_context = Some(val);
+                                }
+                            }
                         }
                         "vector_score" => {
-                            score = val.parse().unwrap_or(0.0);
+                            if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
+                                score = val.parse().unwrap_or(0.0);
+                            }
+                        }
+                        "start_line" => {
+                            start_line =
+                                Some(parse_line_number("start_line", &field_pairs[j + 1])?);
+                        }
+                        "end_line" => {
+                            end_line = Some(parse_line_number("end_line", &field_pairs[j + 1])?);
                         }
                         _ => {}
                     }
@@ -87,13 +157,18 @@ pub fn parse_search_results(value: redis::Value) -> anyhow::Result<Vec<SearchRes
                 content,
                 parent_context,
                 score,
+                start_line,
+                end_line,
             });
         }
 
         i += 2;
     }
 
-    Ok(results)
+    Ok(SearchPage {
+        total_count,
+        results,
+    })
 }
 
 pub(crate) fn escape_exact_match(path: &str) -> String {
@@ -135,6 +210,50 @@ fn parse_language(s: &str) -> Language {
             Language::Rust
         }
     }
+}
+
+fn parse_string_value(value: &redis::Value) -> Option<String> {
+    match value {
+        redis::Value::BulkString(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
+        redis::Value::SimpleString(s) => Some(s.clone()),
+        redis::Value::Int(n) => Some(n.to_string()),
+        redis::Value::Double(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn parse_line_number(field_name: &str, value: &redis::Value) -> anyhow::Result<usize> {
+    match value {
+        redis::Value::Int(n) if *n >= 0 => Ok(*n as usize),
+        redis::Value::Int(n) => anyhow::bail!("{field_name} must be non-negative, got {n}"),
+        redis::Value::BulkString(bytes) => {
+            let raw = String::from_utf8_lossy(bytes);
+            raw.parse::<usize>()
+                .map_err(|_| anyhow::anyhow!("Invalid {field_name}: {raw:?}"))
+        }
+        redis::Value::SimpleString(raw) => raw
+            .parse::<usize>()
+            .map_err(|_| anyhow::anyhow!("Invalid {field_name}: {raw:?}")),
+        other => anyhow::bail!("Invalid {field_name}: expected integer, got {:?}", other),
+    }
+}
+
+fn append_search_return_fields(cmd: &mut Cmd) {
+    cmd.arg("RETURN").arg(SEARCH_RETURN_FIELDS.len());
+    for field in SEARCH_RETURN_FIELDS {
+        cmd.arg(field);
+    }
+}
+
+fn append_search_return_fields_to_pipeline(pipe: &mut Pipeline) {
+    pipe.arg("RETURN").arg(SEARCH_RETURN_FIELDS.len());
+    for field in SEARCH_RETURN_FIELDS {
+        pipe.arg(field);
+    }
+}
+
+fn compare_source_order(a: &SearchResult, b: &SearchResult) -> Ordering {
+    (a.start_line, a.end_line, &a.chunk_id).cmp(&(b.start_line, b.end_line, &b.chunk_id))
 }
 
 fn escape_fts_query(query: &str) -> String {
@@ -246,28 +365,76 @@ pub(super) async fn read_file_chunks_impl(
     let query_str = format!("@filepath:\"{}\"", escape_exact_match(filepath));
     debug!("Reading file chunks: {}", query_str);
 
-    let result: redis::Value = cmd("FT.SEARCH")
-        .arg(index_name)
-        .arg(&query_str)
-        .arg("DIALECT")
-        .arg(2)
-        .arg("LIMIT")
-        .arg(0)
-        .arg(1000)
-        .arg("RETURN")
-        .arg(8)
-        .arg("chunk_id")
-        .arg("filepath")
-        .arg("language")
-        .arg("node_type")
-        .arg("name")
-        .arg("signature")
-        .arg("content")
-        .arg("parent_context")
-        .query_async(conn)
+    match read_file_chunks_paged(conn, index_name, &query_str, true).await {
+        Ok(results) => Ok(results),
+        Err(err) if is_sortby_start_line_error(&err) => {
+            debug!(
+                "SORTBY start_line unavailable for {index_name}, retrying without SORTBY: {err}"
+            );
+            read_file_chunks_paged(conn, index_name, &query_str, false).await
+        }
+        Err(err) => Err(err),
+    }
+}
+
+async fn read_file_chunks_paged(
+    conn: &mut redis::aio::MultiplexedConnection,
+    index_name: &str,
+    query_str: &str,
+    sort_by_start_line: bool,
+) -> anyhow::Result<Vec<SearchResult>> {
+    let mut results = Vec::new();
+    let mut offset = 0usize;
+
+    loop {
+        let page = read_file_chunks_page(
+            conn,
+            index_name,
+            query_str,
+            offset,
+            READ_FILE_PAGE_SIZE,
+            sort_by_start_line,
+        )
         .await?;
 
-    parse_search_results(result)
+        let page_count = page.results.len();
+        let total_count = page.total_count;
+        results.extend(page.results);
+
+        if total_count == 0 || page_count == 0 || results.len() >= total_count {
+            break;
+        }
+
+        offset += READ_FILE_PAGE_SIZE;
+    }
+
+    results.sort_by(compare_source_order);
+    Ok(results)
+}
+
+async fn read_file_chunks_page(
+    conn: &mut redis::aio::MultiplexedConnection,
+    index_name: &str,
+    query_str: &str,
+    offset: usize,
+    page_size: usize,
+    sort_by_start_line: bool,
+) -> anyhow::Result<SearchPage> {
+    let mut command = cmd("FT.SEARCH");
+    command.arg(index_name).arg(query_str).arg("DIALECT").arg(2);
+    if sort_by_start_line {
+        command.arg("SORTBY").arg("start_line").arg("ASC");
+    }
+    command.arg("LIMIT").arg(offset).arg(page_size);
+    append_search_return_fields(&mut command);
+
+    let result: redis::Value = command.query_async(conn).await?;
+    parse_search_page(result)
+}
+
+fn is_sortby_start_line_error(err: &anyhow::Error) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("sortby") || (msg.contains("start_line") && msg.contains("sortable"))
 }
 
 pub(super) async fn lookup_chunks_by_name_impl(
@@ -290,17 +457,8 @@ pub(super) async fn lookup_chunks_by_name_impl(
             .arg(2)
             .arg("LIMIT")
             .arg(0)
-            .arg(3)
-            .arg("RETURN")
-            .arg(8)
-            .arg("chunk_id")
-            .arg("filepath")
-            .arg("language")
-            .arg("node_type")
-            .arg("name")
-            .arg("signature")
-            .arg("content")
-            .arg("parent_context");
+            .arg(3);
+        append_search_return_fields_to_pipeline(&mut pipe);
     }
 
     let pipe_results: Vec<redis::Value> = pipe.query_async(conn).await?;
@@ -411,6 +569,73 @@ mod tests {
         assert_eq!(result[0].name, "main");
         assert_eq!(result[0].content, "fn main() {}");
         assert_eq!(result[0].score, 0.95);
+    }
+
+    #[test]
+    fn parse_search_results_parses_line_ranges_from_bulk_strings() {
+        let value = Value::Array(vec![
+            Value::Int(1),
+            Value::BulkString(b"doc1".to_vec()),
+            Value::Array(vec![
+                Value::BulkString(b"chunk_id".to_vec()),
+                Value::BulkString(b"chunk1".to_vec()),
+                Value::BulkString(b"filepath".to_vec()),
+                Value::BulkString(b"src/main.rs".to_vec()),
+                Value::BulkString(b"start_line".to_vec()),
+                Value::BulkString(b"12".to_vec()),
+                Value::BulkString(b"end_line".to_vec()),
+                Value::BulkString(b"34".to_vec()),
+            ]),
+        ]);
+
+        let result = parse_search_results(value).unwrap();
+
+        assert_eq!(result[0].start_line, Some(12));
+        assert_eq!(result[0].end_line, Some(34));
+    }
+
+    #[test]
+    fn parse_search_results_parses_line_ranges_from_integer_values() {
+        let value = Value::Array(vec![
+            Value::Int(1),
+            Value::BulkString(b"doc1".to_vec()),
+            Value::Array(vec![
+                Value::BulkString(b"chunk_id".to_vec()),
+                Value::BulkString(b"chunk1".to_vec()),
+                Value::BulkString(b"filepath".to_vec()),
+                Value::BulkString(b"src/main.rs".to_vec()),
+                Value::BulkString(b"start_line".to_vec()),
+                Value::Int(12),
+                Value::BulkString(b"end_line".to_vec()),
+                Value::Int(34),
+            ]),
+        ]);
+
+        let result = parse_search_results(value).unwrap();
+
+        assert_eq!(result[0].start_line, Some(12));
+        assert_eq!(result[0].end_line, Some(34));
+    }
+
+    #[test]
+    fn parse_search_results_returns_error_for_invalid_line_range() {
+        let value = Value::Array(vec![
+            Value::Int(1),
+            Value::BulkString(b"doc1".to_vec()),
+            Value::Array(vec![
+                Value::BulkString(b"chunk_id".to_vec()),
+                Value::BulkString(b"chunk1".to_vec()),
+                Value::BulkString(b"filepath".to_vec()),
+                Value::BulkString(b"src/main.rs".to_vec()),
+                Value::BulkString(b"start_line".to_vec()),
+                Value::BulkString(b"not-a-number".to_vec()),
+            ]),
+        ]);
+
+        let result = parse_search_results(value);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("start_line"));
     }
 
     #[test]

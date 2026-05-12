@@ -89,6 +89,8 @@ pub struct SearchResult {
     pub content: String,
     pub parent_context: Option<String>,
     pub score: f64,
+    pub start_line: Option<usize>,
+    pub end_line: Option<usize>,
 }
 
 #[cfg(test)]

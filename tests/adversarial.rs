@@ -1,5 +1,6 @@
 use kt::config::Config;
 use kt::storage::Storage;
+use kt::{Chunk, Language};
 
 async fn make_storage() -> Storage {
     let config = Config::from_env();
@@ -257,4 +258,60 @@ async fn test_newlines_in_filepath() {
         ),
         Err(e) => panic!("FAIL: newline in filepath crashed: {e}"),
     }
+}
+
+fn test_chunk(filepath: &str, name: &str, start_line: usize, end_line: usize) -> Chunk {
+    Chunk {
+        chunk_id: Chunk::generate_id(filepath, name, start_line),
+        filepath: filepath.to_string(),
+        language: Language::Rust,
+        node_type: "function".to_string(),
+        name: name.to_string(),
+        signature: format!("fn {name}()"),
+        content: format!("fn {name}() {{}}"),
+        parent_context: None,
+        start_line,
+        end_line,
+    }
+}
+
+#[tokio::test]
+async fn test_read_file_chunks_returns_source_order_with_line_ranges() {
+    let storage = make_storage().await;
+    let filepath = "tests/fixtures/read_file_out_of_order.rs";
+    let _ = storage.remove_file_chunks(filepath).await;
+
+    let chunks = vec![
+        test_chunk(filepath, "third", 20, 24),
+        test_chunk(filepath, "first", 0, 4),
+        test_chunk(filepath, "second", 10, 14),
+    ];
+    let embeddings = vec![vec![0.0f32; 384]; chunks.len()];
+
+    storage
+        .store_chunks_batch(&chunks, &embeddings, None)
+        .await
+        .unwrap();
+
+    let results = storage.read_file_chunks(filepath).await.unwrap();
+    let names = results
+        .iter()
+        .map(|result| result.name.as_str())
+        .collect::<Vec<_>>();
+    let ranges = results
+        .iter()
+        .map(|result| (result.start_line, result.end_line))
+        .collect::<Vec<_>>();
+
+    assert_eq!(names, vec!["first", "second", "third"]);
+    assert_eq!(
+        ranges,
+        vec![
+            (Some(0), Some(4)),
+            (Some(10), Some(14)),
+            (Some(20), Some(24))
+        ]
+    );
+
+    storage.remove_file_chunks(filepath).await.unwrap();
 }
