@@ -1,3 +1,4 @@
+use crate::global_config::{GlobalConfig, GlobalConfigManager};
 use anyhow::{Context, Result};
 use console::style;
 use dialoguer::MultiSelect;
@@ -259,24 +260,38 @@ impl McpSetup {
     }
 
     async fn generate_kt_config(&self, global: bool) -> Result<Value> {
-        let redis_url = if global {
-            self.detect_redis_url()
-                .await
-                .unwrap_or_else(|| "redis://localhost:6379".to_string())
+        let (redis_url, redis_timeout_seconds) = if global {
+            let global_manager = GlobalConfigManager::new()?;
+            let global_config = global_manager.load_or_create()?;
+            (
+                self.resolve_redis_url(&global_config).await,
+                global_config.redis.timeout_seconds.max(1),
+            )
         } else {
-            "redis://localhost:6379".to_string()
+            ("redis://localhost:6379".to_string(), 5)
         };
 
         Ok(json!({
             "command": "kt",
             "args": ["serve"],
             "env": {
-                "KT_REDIS_URL": redis_url
+                "KT_REDIS_URL": redis_url,
+                "KT_REDIS_TIMEOUT_SECONDS": redis_timeout_seconds.to_string()
             }
         }))
     }
 
-    async fn detect_redis_url(&self) -> Option<String> {
+    async fn resolve_redis_url(&self, config: &GlobalConfig) -> String {
+        if config.mcp.auto_detect_redis && config.redis.auto_detect {
+            self.detect_redis_url(config.redis.timeout_seconds.max(1))
+                .await
+                .unwrap_or_else(|| config.redis.url.clone())
+        } else {
+            config.redis.url.clone()
+        }
+    }
+
+    async fn detect_redis_url(&self, timeout_seconds: u64) -> Option<String> {
         info!("Attempting to detect Redis instance...");
 
         let common_urls = vec![
@@ -287,7 +302,7 @@ impl McpSetup {
         ];
 
         for url in &common_urls {
-            if self.test_redis_connection(url).await {
+            if self.test_redis_connection(url, timeout_seconds).await {
                 info!("Found Redis at: {}", url);
                 return Some(url.to_string());
             }
@@ -297,19 +312,24 @@ impl McpSetup {
         None
     }
 
-    async fn test_redis_connection(&self, url: &str) -> bool {
+    async fn test_redis_connection(&self, url: &str, timeout_seconds: u64) -> bool {
         let client = match redis::Client::open(url) {
             Ok(c) => c,
             Err(_) => return false,
         };
 
-        tokio::time::timeout(std::time::Duration::from_secs(5), async move {
-            let mut conn = client.get_multiplexed_async_connection().await?;
-            let _: String = redis::cmd("PING").query_async(&mut conn).await?;
-            Ok::<_, redis::RedisError>(())
-        })
-        .await
-        .is_ok()
+        matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(timeout_seconds),
+                async move {
+                    let mut conn = client.get_multiplexed_async_connection().await?;
+                    let _: String = redis::cmd("PING").query_async(&mut conn).await?;
+                    Ok::<_, redis::RedisError>(())
+                },
+            )
+            .await,
+            Ok(Ok(()))
+        )
     }
 
     fn format_config_for_harness(&self, harness: &HarnessType, kt_config: &Value) -> Value {
@@ -515,5 +535,26 @@ mod tests {
             HarnessType::Cline.config_namespace(),
             Some("cline.mcpServers")
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_redis_url_uses_configured_url_when_auto_detect_is_disabled() {
+        let setup = McpSetup::new();
+        let mut config = GlobalConfig::default();
+        config.redis.url = "redis://redis.example:6379".to_string();
+        config.redis.auto_detect = false;
+
+        let redis_url = setup.resolve_redis_url(&config).await;
+
+        assert_eq!(redis_url, "redis://redis.example:6379");
+    }
+
+    #[tokio::test]
+    async fn test_redis_connection_returns_false_when_ping_fails() {
+        let setup = McpSetup::new();
+
+        let detected = setup.test_redis_connection("redis://127.0.0.1:1", 1).await;
+
+        assert!(!detected);
     }
 }

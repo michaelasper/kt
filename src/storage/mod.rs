@@ -13,7 +13,7 @@ pub use search::parse_search_results;
 #[derive(Debug, Clone)]
 pub struct Storage {
     client: redis::Client,
-    _config: Config,
+    config: Config,
 }
 
 impl Storage {
@@ -21,12 +21,22 @@ impl Storage {
         let client = redis::Client::open(config.redis_url.as_str())?;
         Ok(Self {
             client,
-            _config: config.clone(),
+            config: config.clone(),
         })
     }
 
     pub async fn connection(&self) -> anyhow::Result<redis::aio::MultiplexedConnection> {
-        let conn = self.client.get_multiplexed_async_connection().await?;
+        let conn = tokio::time::timeout(
+            self.config.redis_timeout,
+            self.client.get_multiplexed_async_connection(),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Timed out connecting to Redis after {}s",
+                self.config.redis_timeout.as_secs()
+            )
+        })??;
         Ok(conn)
     }
 

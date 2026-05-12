@@ -77,10 +77,16 @@ enum McpAction {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let config = kt::config::Config::from_env();
+    let runtime_config = if cli.command.requires_runtime_config() {
+        Some(kt::config::Config::load()?)
+    } else {
+        None
+    };
 
     match cli.command {
         Commands::Serve => {
+            let config = runtime_config
+                .ok_or_else(|| anyhow::anyhow!("runtime config missing for kt serve"))?;
             kt::mcp::run_server(config).await?;
         }
         Commands::Sync {
@@ -88,17 +94,26 @@ async fn main() -> anyhow::Result<()> {
             full,
             name,
         } => {
-            run_sync(&config, &directory, full, name.as_deref()).await?;
+            let config = runtime_config
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("runtime config missing for kt sync"))?;
+            run_sync(config, &directory, full, name.as_deref()).await?;
         }
         Commands::Upgrade { force, version } => {
             run_upgrade(force, version).await?;
         }
         Commands::Mcp { action } => {
-            run_mcp_action(action, &config).await?;
+            run_mcp_action(action).await?;
         }
     }
 
     Ok(())
+}
+
+impl Commands {
+    fn requires_runtime_config(&self) -> bool {
+        matches!(self, Self::Serve | Self::Sync { .. })
+    }
 }
 
 struct CliProgress {
@@ -154,7 +169,10 @@ async fn run_sync(
 
     let engine = kt::embedding::EmbeddingEngine::new(config).await?;
 
-    let plan = kt::sync::plan(directory, &storage, &codebase, full).await?;
+    let discovery_options = config.discovery_options();
+    let plan =
+        kt::sync::plan_with_options(directory, &storage, &codebase, full, &discovery_options)
+            .await?;
 
     if plan.files.is_empty() {
         tracing::info!("No supported files found to sync");
@@ -178,7 +196,7 @@ async fn run_upgrade(force: bool, version: Option<String>) -> anyhow::Result<()>
     upgrader.upgrade(force, version).await
 }
 
-async fn run_mcp_action(action: McpAction, _config: &kt::config::Config) -> anyhow::Result<()> {
+async fn run_mcp_action(action: McpAction) -> anyhow::Result<()> {
     match action {
         McpAction::Setup {
             harness,
@@ -261,5 +279,42 @@ fn parse_harness(name: &str) -> anyhow::Result<HarnessType> {
             "Unknown harness: {}. Valid options: opencode, claude-desktop, cline, continue, pi",
             name
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_serve_and_sync_require_runtime_config() {
+        let commands = [
+            (Commands::Serve, true),
+            (
+                Commands::Sync {
+                    directory: PathBuf::from("."),
+                    full: false,
+                    name: None,
+                },
+                true,
+            ),
+            (
+                Commands::Upgrade {
+                    force: false,
+                    version: None,
+                },
+                false,
+            ),
+            (
+                Commands::Mcp {
+                    action: McpAction::Show,
+                },
+                false,
+            ),
+        ];
+
+        for (command, expected) in commands {
+            assert_eq!(command.requires_runtime_config(), expected);
+        }
     }
 }

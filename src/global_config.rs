@@ -1,3 +1,4 @@
+use crate::discovery::default_exclude_patterns;
 use anyhow::{Context, Result};
 use console::style;
 use serde::{Deserialize, Serialize};
@@ -77,6 +78,7 @@ Run `kt --help` or visit: https://github.com/michaelasper/kt
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GlobalConfig {
     pub version: String,
     pub mcp: McpSettings,
@@ -85,23 +87,35 @@ pub struct GlobalConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct McpSettings {
+    /// Active for `kt mcp setup --global`: allows Redis auto-detection during harness setup.
     pub auto_detect_redis: bool,
+    /// Planned: reserved for future non-interactive harness selection defaults.
     pub default_harnesses: Vec<String>,
+    /// Planned: reserved for future interactive prompts before creating global config.
     pub prompt_for_global_config: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RedisSettings {
+    /// Active: fallback Redis URL when `KT_REDIS_URL` is not set.
     pub url: String,
+    /// Active for `kt mcp setup --global`: permits probing common Redis URLs.
     pub auto_detect: bool,
+    /// Active: Redis connection/probe timeout in seconds.
     pub timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct IndexingSettings {
+    /// Planned: reserved for future MCP server startup sync.
     pub auto_sync_on_start: bool,
+    /// Planned: reserved for future default sync targets.
     pub default_paths: Vec<String>,
+    /// Active: directory/path patterns skipped by sync and PR indexing.
     pub exclude_patterns: Vec<String>,
 }
 
@@ -109,26 +123,39 @@ impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
             version: "1.0.0".to_string(),
-            mcp: McpSettings {
-                auto_detect_redis: true,
-                default_harnesses: vec!["OpenCode".to_string(), "ClaudeDesktop".to_string()],
-                prompt_for_global_config: true,
-            },
-            redis: RedisSettings {
-                url: "redis://localhost:6379".to_string(),
-                auto_detect: true,
-                timeout_seconds: 5,
-            },
-            indexing: IndexingSettings {
-                auto_sync_on_start: false,
-                default_paths: vec![".".to_string()],
-                exclude_patterns: vec![
-                    "node_modules".to_string(),
-                    "target".to_string(),
-                    ".git".to_string(),
-                    "vendor".to_string(),
-                ],
-            },
+            mcp: McpSettings::default(),
+            redis: RedisSettings::default(),
+            indexing: IndexingSettings::default(),
+        }
+    }
+}
+
+impl Default for McpSettings {
+    fn default() -> Self {
+        Self {
+            auto_detect_redis: true,
+            default_harnesses: vec!["OpenCode".to_string(), "ClaudeDesktop".to_string()],
+            prompt_for_global_config: true,
+        }
+    }
+}
+
+impl Default for RedisSettings {
+    fn default() -> Self {
+        Self {
+            url: "redis://localhost:6379".to_string(),
+            auto_detect: true,
+            timeout_seconds: 5,
+        }
+    }
+}
+
+impl Default for IndexingSettings {
+    fn default() -> Self {
+        Self {
+            auto_sync_on_start: false,
+            default_paths: vec![".".to_string()],
+            exclude_patterns: default_exclude_patterns(),
         }
     }
 }
@@ -177,10 +204,7 @@ impl GlobalConfigManager {
     pub fn load_or_create(&self) -> Result<GlobalConfig> {
         self.ensure_config_dir()?;
 
-        if self.config_file.exists() {
-            let content = fs::read_to_string(&self.config_file)?;
-            let config: GlobalConfig = serde_json::from_str(&content)?;
-
+        if let Some(config) = self.load_existing()? {
             info!("Loaded global config from: {}", self.config_file.display());
             Ok(config)
         } else {
@@ -193,6 +217,16 @@ impl GlobalConfigManager {
             );
             Ok(config)
         }
+    }
+
+    pub fn load_existing(&self) -> Result<Option<GlobalConfig>> {
+        if !self.config_file.exists() {
+            return Ok(None);
+        }
+
+        let content = fs::read_to_string(&self.config_file)?;
+        let config: GlobalConfig = serde_json::from_str(&content)?;
+        Ok(Some(config))
     }
 
     pub fn save(&self, config: &GlobalConfig) -> Result<()> {
@@ -284,7 +318,7 @@ impl GlobalConfigManager {
 
         println!("{}", style("MCP Settings:").cyan().bold());
         println!(
-            "  Auto-detect Redis: {}",
+            "  Auto-detect Redis (active for setup): {}",
             if config.mcp.auto_detect_redis {
                 style("Yes").green()
             } else {
@@ -292,11 +326,11 @@ impl GlobalConfigManager {
             }
         );
         println!(
-            "  Default Harnesses: {}",
+            "  Default Harnesses (planned): {}",
             style(config.mcp.default_harnesses.join(", ")).white()
         );
         println!(
-            "  Prompt for Global Config: {}",
+            "  Prompt for Global Config (planned): {}",
             if config.mcp.prompt_for_global_config {
                 style("Yes").green()
             } else {
@@ -306,9 +340,12 @@ impl GlobalConfigManager {
         println!();
 
         println!("{}", style("Redis Settings:").cyan().bold());
-        println!("  URL: {}", style(&config.redis.url).white());
         println!(
-            "  Auto-detect: {}",
+            "  URL (active fallback): {}",
+            style(&config.redis.url).white()
+        );
+        println!(
+            "  Auto-detect (active for setup): {}",
             if config.redis.auto_detect {
                 style("Yes").green()
             } else {
@@ -316,14 +353,14 @@ impl GlobalConfigManager {
             }
         );
         println!(
-            "  Timeout: {}s",
+            "  Timeout (active): {}s",
             style(config.redis.timeout_seconds).white()
         );
         println!();
 
         println!("{}", style("Indexing Settings:").cyan().bold());
         println!(
-            "  Auto-sync on Start: {}",
+            "  Auto-sync on Start (planned): {}",
             if config.indexing.auto_sync_on_start {
                 style("Yes").green()
             } else {
@@ -331,11 +368,11 @@ impl GlobalConfigManager {
             }
         );
         println!(
-            "  Default Paths: {}",
+            "  Default Paths (planned): {}",
             style(config.indexing.default_paths.join(", ")).white()
         );
         println!(
-            "  Exclude Patterns: {}",
+            "  Exclude Patterns (active): {}",
             style(config.indexing.exclude_patterns.join(", ")).dim()
         );
         println!();

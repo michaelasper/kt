@@ -1,4 +1,4 @@
-use crate::discovery::{self, DiscoveredFile};
+use crate::discovery::{self, DiscoveredFile, DiscoveryOptions};
 use crate::git;
 use crate::storage::Storage;
 use crate::Codebase;
@@ -48,10 +48,20 @@ pub async fn plan(
     codebase: &Codebase,
     full: bool,
 ) -> anyhow::Result<SyncPlan> {
+    plan_with_options(root, storage, codebase, full, &DiscoveryOptions::default()).await
+}
+
+pub async fn plan_with_options(
+    root: &Path,
+    storage: &Storage,
+    codebase: &Codebase,
+    full: bool,
+    discovery_options: &DiscoveryOptions,
+) -> anyhow::Result<SyncPlan> {
     if full {
         tracing::info!("Full sync requested (--full flag)");
         return Ok(SyncPlan {
-            files: discovery::discover_files(root),
+            files: discovery::discover_files_with_options(root, discovery_options),
             strategy: SyncStrategy::Full,
             deleted_paths: Vec::new(),
         });
@@ -66,7 +76,7 @@ pub async fn plan(
             None => {
                 tracing::warn!("No commit SHA found (detached HEAD?), falling back to full sync");
                 return Ok(SyncPlan {
-                    files: discovery::discover_files(root),
+                    files: discovery::discover_files_with_options(root, discovery_options),
                     strategy: SyncStrategy::Full,
                     deleted_paths: Vec::new(),
                 });
@@ -81,7 +91,7 @@ pub async fn plan(
             None => {
                 tracing::info!("No previous sync found, performing full sync");
                 Ok(SyncPlan {
-                    files: discovery::discover_files(root),
+                    files: discovery::discover_files_with_options(root, discovery_options),
                     strategy: SyncStrategy::Full,
                     deleted_paths: Vec::new(),
                 })
@@ -116,7 +126,8 @@ pub async fn plan(
 
                         let changed_set: HashSet<_> = changed_paths.into_iter().collect();
 
-                        let all_files = discovery::discover_files(root);
+                        let all_files =
+                            discovery::discover_files_with_options(root, discovery_options);
                         let changed_files: Vec<_> = all_files
                             .into_iter()
                             .filter(|f| changed_set.contains(&f.relative_path))
@@ -140,7 +151,7 @@ pub async fn plan(
                     Err(e) => {
                         tracing::warn!("Failed to compute diff ({e}), falling back to full sync");
                         Ok(SyncPlan {
-                            files: discovery::discover_files(root),
+                            files: discovery::discover_files_with_options(root, discovery_options),
                             strategy: SyncStrategy::Full,
                             deleted_paths: Vec::new(),
                         })
@@ -153,7 +164,11 @@ pub async fn plan(
 
         let known_mtimes = storage.get_file_mtimes(Some(&codebase.codebase_id)).await?;
         Ok(SyncPlan {
-            files: discovery::discover_modified_files(root, &known_mtimes),
+            files: discovery::discover_modified_files_with_options(
+                root,
+                &known_mtimes,
+                discovery_options,
+            ),
             strategy: SyncStrategy::PartialMtime,
             deleted_paths: Vec::new(),
         })
@@ -278,4 +293,40 @@ pub async fn finalize(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn full_plan_uses_configured_discovery_options() {
+        let temp = tempfile::tempdir().unwrap();
+        let src_dir = temp.path().join("src");
+        let generated_dir = temp.path().join("generated");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&generated_dir).unwrap();
+        std::fs::write(src_dir.join("lib.rs"), "fn kept() {}\n").unwrap();
+        std::fs::write(generated_dir.join("ignored.rs"), "fn ignored() {}\n").unwrap();
+
+        let config = Config {
+            redis_url: "redis://localhost:6379".to_string(),
+            redis_timeout: Duration::from_secs(1),
+            model_cache_dir: PathBuf::from("."),
+            exclude_patterns: vec!["generated".to_string()],
+        };
+        let storage = Storage::new(&config).unwrap();
+        let codebase = Codebase::from_root(temp.path(), None).unwrap();
+        let discovery_options = config.discovery_options();
+
+        let plan = plan_with_options(temp.path(), &storage, &codebase, true, &discovery_options)
+            .await
+            .unwrap();
+
+        assert_eq!(plan.files.len(), 1);
+        assert_eq!(plan.files[0].relative_path, "src/lib.rs");
+    }
 }

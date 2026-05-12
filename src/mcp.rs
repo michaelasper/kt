@@ -271,9 +271,11 @@ impl KtServer {
             .as_ref()
             .ok_or_else(|| mcp_error("Embedding engine not available"))?;
 
-        let plan = crate::sync::plan(root, &storage, &codebase, full)
-            .await
-            .map_err(mcp_error)?;
+        let discovery_options = self.inner.config.discovery_options();
+        let plan =
+            crate::sync::plan_with_options(root, &storage, &codebase, full, &discovery_options)
+                .await
+                .map_err(mcp_error)?;
 
         if plan.files.is_empty() {
             crate::sync::finalize(root, &codebase, &plan.strategy, &storage)
@@ -382,7 +384,13 @@ impl KtServer {
             .as_ref()
             .ok_or_else(|| mcp_error("Embedding engine not available"))?;
 
+        let discovery_options = self.inner.config.discovery_options();
         for filepath in &changed_files {
+            if discovery_options.is_excluded_relative_path(std::path::Path::new(filepath)) {
+                info!("Skipping excluded file: {}", filepath);
+                continue;
+            }
+
             let file_path = root.join(filepath);
             if !file_path.exists() {
                 info!("Skipping deleted file: {}", filepath);
