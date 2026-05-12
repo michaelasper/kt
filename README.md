@@ -42,8 +42,9 @@ If you want a local, private, MCP-native knowledge layer for code reasoning, thi
 
 - Indexes Rust, Go, and Java with Tree-sitter AST chunking and parent-context injection for stronger semantic recall.
 - Runs hybrid retrieval in Redis with vector similarity plus BM25 keyword ranking.
+- Stores a codebase registry so multiple repositories can share one Redis corpus while still supporting scoped search by alias or path.
 - Supports branch-aware working sets through a temporary **shadow index** (`kt_git_status`, `kt_index_pr`) so changed files are searchable during PR or draft work.
-- Exposes MCP tools (`kt_search`, `kt_read_file`, `kt_sync`) for agent workflows and scriptable code navigation.
+- Exposes MCP tools (`kt_search`, `kt_read_file`, `kt_sync`, `kt_list_codebases`) for agent workflows and scriptable code navigation.
 - Embeds code locally with ONNX `all-MiniLM-L6-v2` to keep indexing and inference offline.
 - Adds MCP-facing XML envelopes so results can be parsed safely by agent and automation tooling.
 
@@ -72,7 +73,7 @@ KT_REPO_URL=$(git remote get-url origin) ./scripts/install.sh
 3) Index and run the MCP server:
 
 ```bash
-kt sync /path/to/repo
+kt sync --name my-repo /path/to/repo
 kt serve
 ```
 
@@ -129,8 +130,12 @@ The server reads `KT_REDIS_URL` (default `redis://localhost:6379`) and exposes M
 ### Index a repository
 
 ```bash
-kt sync /path/to/repo
+kt sync --name my-repo /path/to/repo
 ```
+
+`--name` is optional, but aliases make scoped MCP calls easier. A repository's `codebase_id` is derived from the canonical absolute sync root, so the same alias cannot be assigned to a different path.
+
+Upgrading to the multi-codebase schema migrates Redis to `kt:schema_version = 2`. The migration intentionally drops old `kt:doc:*`, `kt:shadow:*`, and legacy sync-state keys, so repositories must be re-synced after upgrading.
 
 ### Upgrade kt
 
@@ -177,7 +182,7 @@ Display the current global kt configuration.
 | Command | Description |
 |---------|-------------|
 | `kt serve` | Start the MCP server (stdio transport) |
-| `kt sync <dir>` | Index a directory into the knowledge base |
+| `kt sync [--name <alias>] <dir>` | Index a directory into the knowledge base |
 | `kt upgrade` | Upgrade kt to the latest version |
 | `kt mcp setup` | Configure kt for MCP harnesses (interactive) |
 | `kt mcp setup --global` | Configure with global settings |
@@ -242,6 +247,23 @@ kt_index_pr
 ```
 
 Used as an MCP tool, this indexes changed files into an ephemeral shadow index (TTL-based). Afterwards, call `kt_search` and `kt_read_file` normally; shadow chunks are merged and preferred automatically.
+
+### Multi-codebase search
+
+By default, `kt_search` searches across every indexed codebase:
+
+```xml
+<kt_search query="redis schema migration" />
+```
+
+Scope searches or file reads with either `codebase_alias` or `directory_path`:
+
+```xml
+<kt_search query="hybrid_search" codebase_alias="kt" />
+<kt_read_file filepath="src/lib.rs" directory_path="/Users/me/source/kt" />
+```
+
+Use `kt_list_codebases` to discover registered codebases, aliases, root paths, last synced commits, and indexed status. Unscoped `kt_read_file` returns grouped matches for the requested repo-relative filepath across all codebases.
 
 ## Architecture Overview
 

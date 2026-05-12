@@ -3,8 +3,9 @@ use redis::{cmd, Cmd, Pipeline};
 use std::cmp::Ordering;
 use tracing::{debug, warn};
 
-const SEARCH_RETURN_FIELDS: [&str; 10] = [
+const SEARCH_RETURN_FIELDS: [&str; 11] = [
     "chunk_id",
+    "codebase_id",
     "filepath",
     "language",
     "node_type",
@@ -68,6 +69,7 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
         let fields = &arr[i + 1];
 
         let mut chunk_id = String::new();
+        let mut codebase_id = String::new();
         let mut filepath = String::new();
         let mut language = Language::Rust;
         let mut node_type = String::new();
@@ -88,6 +90,11 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
                         "chunk_id" => {
                             if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
                                 chunk_id = val;
+                            }
+                        }
+                        "codebase_id" => {
+                            if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
+                                codebase_id = val;
                             }
                         }
                         "filepath" => {
@@ -149,6 +156,9 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
         if !filepath.is_empty() {
             results.push(SearchResult {
                 chunk_id,
+                codebase_id,
+                codebase_alias: None,
+                root_path: String::new(),
                 filepath,
                 language,
                 node_type,
@@ -281,38 +291,80 @@ fn escape_fts_query(query: &str) -> String {
     result
 }
 
-fn build_hybrid_query(query_text: &str, language: Option<&Language>, top_k: usize) -> String {
+fn tag_filter(field: &str, value: &str) -> String {
+    format!("@{}:{{{}}}", field, escape_tag_value(value))
+}
+
+pub(crate) fn build_codebase_filter(codebase_id: &str) -> String {
+    tag_filter("codebase_id", codebase_id)
+}
+
+fn escape_tag_value(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            escaped.push(ch);
+        } else {
+            escaped.push('\\');
+            escaped.push(ch);
+        }
+    }
+    escaped
+}
+
+fn build_scope_filters(language: Option<&Language>, codebase_id: Option<&str>) -> Vec<String> {
+    let mut filters = Vec::new();
+    if let Some(id) = codebase_id {
+        filters.push(build_codebase_filter(id));
+    }
+    if let Some(lang) = language {
+        filters.push(tag_filter("language", lang.as_str()));
+    }
+    filters
+}
+
+fn combine_filters_and_text(filters: &[String], text_query: Option<String>) -> String {
+    match (filters.is_empty(), text_query) {
+        (true, None) => "*".to_string(),
+        (true, Some(text)) => format!("({text})"),
+        (false, None) if filters.len() == 1 => filters[0].clone(),
+        (false, None) => format!("({})", filters.join(" ")),
+        (false, Some(text)) => format!("({} ({text}))", filters.join(" ")),
+    }
+}
+
+pub(crate) fn build_hybrid_query(
+    query_text: &str,
+    language: Option<&Language>,
+    codebase_id: Option<&str>,
+    top_k: usize,
+) -> String {
     let effective_query = query_text.trim();
-    if effective_query.is_empty() {
-        match language {
-            Some(lang) => {
-                format!(
-                    "@language:{{{}}}=>[KNN {top_k} @embedding $query_vec AS vector_score]",
-                    lang.as_str()
-                )
-            }
-            None => {
-                format!("*=>[KNN {top_k} @embedding $query_vec AS vector_score]")
-            }
-        }
+    let filters = build_scope_filters(language, codebase_id);
+    let text_query = if effective_query.is_empty() {
+        None
     } else {
-        match language {
-            Some(lang) => {
-                format!(
-                    "(@language:{{{}}} ({}))=>[KNN {} @embedding $query_vec AS vector_score]",
-                    lang.as_str(),
-                    escape_fts_query(effective_query),
-                    top_k
-                )
-            }
-            None => {
-                format!(
-                    "({})=>[KNN {} @embedding $query_vec AS vector_score]",
-                    escape_fts_query(effective_query),
-                    top_k
-                )
-            }
-        }
+        Some(escape_fts_query(effective_query))
+    };
+    let base = combine_filters_and_text(&filters, text_query);
+    format!("{base}=>[KNN {top_k} @embedding $query_vec AS vector_score]")
+}
+
+pub(crate) fn build_file_query(filepath: &str, codebase_id: Option<&str>) -> String {
+    let filepath_query = format!("@filepath:\"{}\"", escape_exact_match(filepath));
+    if let Some(id) = codebase_id {
+        format!("({} {})", build_codebase_filter(id), filepath_query)
+    } else {
+        filepath_query
+    }
+}
+
+fn build_name_query(name: &str, codebase_id: Option<&str>) -> String {
+    let name_query = format!("@name:\"{}\"", escape_exact_match(name));
+    if let Some(id) = codebase_id {
+        format!("({} {})", build_codebase_filter(id), name_query)
+    } else {
+        name_query
     }
 }
 
@@ -322,6 +374,7 @@ pub(super) async fn hybrid_search_impl(
     query_embedding: &[f32],
     query_text: &str,
     language: Option<&Language>,
+    codebase_id: Option<&str>,
     top_k: usize,
 ) -> anyhow::Result<Vec<SearchResult>> {
     let embedding_bytes: Vec<u8> = query_embedding
@@ -329,7 +382,7 @@ pub(super) async fn hybrid_search_impl(
         .flat_map(|f| f.to_le_bytes())
         .collect();
 
-    let query_str = build_hybrid_query(query_text, language, top_k);
+    let query_str = build_hybrid_query(query_text, language, codebase_id, top_k);
     debug!("Hybrid search query: {}", query_str);
 
     let result: redis::Value = cmd("FT.SEARCH")
@@ -357,12 +410,13 @@ pub(super) async fn read_file_chunks_impl(
     conn: &mut redis::aio::MultiplexedConnection,
     index_name: &str,
     filepath: &str,
+    codebase_id: Option<&str>,
 ) -> anyhow::Result<Vec<SearchResult>> {
     if filepath.trim().is_empty() {
         return Ok(Vec::new());
     }
 
-    let query_str = format!("@filepath:\"{}\"", escape_exact_match(filepath));
+    let query_str = build_file_query(filepath, codebase_id);
     debug!("Reading file chunks: {}", query_str);
 
     match read_file_chunks_paged(conn, index_name, &query_str, true).await {
@@ -441,6 +495,7 @@ pub(super) async fn lookup_chunks_by_name_impl(
     conn: &mut redis::aio::MultiplexedConnection,
     index_name: &str,
     names: &[String],
+    codebase_id: Option<&str>,
 ) -> anyhow::Result<Vec<SearchResult>> {
     if names.is_empty() {
         return Ok(Vec::new());
@@ -449,7 +504,7 @@ pub(super) async fn lookup_chunks_by_name_impl(
 
     let mut pipe = redis::pipe();
     for name in names {
-        let query_str = format!("@name:\"{}\"", escape_exact_match(name));
+        let query_str = build_name_query(name, codebase_id);
         pipe.cmd("FT.SEARCH")
             .arg(index_name)
             .arg(&query_str)
@@ -471,7 +526,7 @@ pub(super) async fn lookup_chunks_by_name_impl(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_search_results;
+    use super::{build_file_query, build_hybrid_query, parse_search_results};
     use crate::storage::index::is_index_not_found_error;
     use crate::Language;
     use redis::RedisError;
@@ -563,12 +618,60 @@ mod tests {
         let result = parse_search_results(value).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].chunk_id, "chunk1");
+        assert_eq!(result[0].codebase_id, "");
         assert_eq!(result[0].filepath, "src/main.rs");
         assert!(matches!(result[0].language, Language::Rust));
         assert_eq!(result[0].node_type, "function");
         assert_eq!(result[0].name, "main");
         assert_eq!(result[0].content, "fn main() {}");
         assert_eq!(result[0].score, 0.95);
+    }
+
+    #[test]
+    fn parse_search_results_parses_codebase_id() {
+        let value = Value::Array(vec![
+            Value::Int(1),
+            Value::BulkString(b"doc1".to_vec()),
+            Value::Array(vec![
+                Value::BulkString(b"chunk_id".to_vec()),
+                Value::BulkString(b"chunk1".to_vec()),
+                Value::BulkString(b"codebase_id".to_vec()),
+                Value::BulkString(b"codebase-a".to_vec()),
+                Value::BulkString(b"filepath".to_vec()),
+                Value::BulkString(b"src/main.rs".to_vec()),
+            ]),
+        ]);
+
+        let result = parse_search_results(value).unwrap();
+
+        assert_eq!(result[0].codebase_id, "codebase-a");
+    }
+
+    #[test]
+    fn build_hybrid_query_omits_codebase_filter_when_unscoped() {
+        let query = build_hybrid_query("function", None, None, 3);
+
+        assert!(!query.contains("@codebase_id"));
+        assert_eq!(
+            query,
+            "(function)=>[KNN 3 @embedding $query_vec AS vector_score]"
+        );
+    }
+
+    #[test]
+    fn build_hybrid_query_includes_codebase_filter_when_scoped() {
+        let query = build_hybrid_query("function", Some(&Language::Rust), Some("abc123"), 3);
+
+        assert!(query.contains("@codebase_id:{abc123}"));
+        assert!(query.contains("@language:{rust}"));
+        assert!(query.contains("(function)"));
+    }
+
+    #[test]
+    fn build_file_query_scopes_filepath_when_codebase_id_is_supplied() {
+        let query = build_file_query("src/lib.rs", Some("abc123"));
+
+        assert_eq!(query, "(@codebase_id:{abc123} @filepath:\"src/lib.rs\")");
     }
 
     #[test]

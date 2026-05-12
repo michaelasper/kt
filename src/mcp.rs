@@ -40,12 +40,24 @@ pub struct SearchParams {
         description = "If true, return only function/type signatures without bodies to save tokens"
     )]
     pub headers_only: Option<bool>,
+    #[schemars(description = "Optional directory path to scope search to one indexed codebase")]
+    pub directory_path: Option<String>,
+    #[schemars(description = "Optional codebase alias to scope search to one indexed codebase")]
+    pub codebase_alias: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadFileParams {
     #[schemars(description = "Repository-relative path to the file")]
     pub filepath: String,
+    #[schemars(
+        description = "Optional directory path to scope file reads to one indexed codebase"
+    )]
+    pub directory_path: Option<String>,
+    #[schemars(
+        description = "Optional codebase alias to scope file reads to one indexed codebase"
+    )]
+    pub codebase_alias: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -54,6 +66,8 @@ pub struct SyncParams {
     pub directory_path: String,
     #[schemars(description = "Force full re-index instead of partial sync")]
     pub full: Option<bool>,
+    #[schemars(description = "Optional alias to use for this codebase")]
+    pub codebase_alias: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -71,6 +85,9 @@ pub struct IndexPrParams {
     #[schemars(description = "Shadow index TTL in seconds (default: 7200 / 2 hours)")]
     pub ttl_seconds: Option<u64>,
 }
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListCodebasesParams {}
 
 impl KtServer {
     pub fn new(config: Config) -> anyhow::Result<Self> {
@@ -125,14 +142,34 @@ impl KtServer {
         let query_embedding = engine.embed(&params.query).map_err(mcp_error)?;
 
         let storage = self.inner.storage.read().await;
+        let codebase = resolve_codebase_selector(
+            &storage,
+            params.directory_path.as_deref(),
+            params.codebase_alias.as_deref(),
+        )
+        .await
+        .map_err(mcp_error)?;
+        let codebase_id = codebase.as_ref().map(|c| c.codebase_id.as_str());
 
         let main_results = storage
-            .hybrid_search(&query_embedding, &params.query, language.as_ref(), top_k)
+            .hybrid_search_scoped(
+                &query_embedding,
+                &params.query,
+                language.as_ref(),
+                codebase_id,
+                top_k,
+            )
             .await
             .map_err(mcp_error)?;
 
         let shadow_results = storage
-            .search_shadow(&query_embedding, &params.query, language.as_ref(), top_k)
+            .search_shadow_scoped(
+                &query_embedding,
+                &params.query,
+                language.as_ref(),
+                codebase_id,
+                top_k,
+            )
             .await
             .unwrap_or_default();
 
@@ -162,20 +199,32 @@ impl KtServer {
         self.ensure_ready().await.map_err(mcp_error)?;
 
         let storage = self.inner.storage.read().await;
+        let codebase = resolve_codebase_selector(
+            &storage,
+            params.directory_path.as_deref(),
+            params.codebase_alias.as_deref(),
+        )
+        .await
+        .map_err(mcp_error)?;
+        let codebase_id = codebase.as_ref().map(|c| c.codebase_id.as_str());
 
-        let results = storage
-            .read_shadow_file_chunks(&params.filepath)
+        let shadow_results = storage
+            .read_shadow_file_chunks_scoped(&params.filepath, codebase_id)
             .await
             .unwrap_or_default();
 
-        let results = if !results.is_empty() {
-            results
-        } else {
-            storage
-                .read_file_chunks(&params.filepath)
-                .await
-                .map_err(mcp_error)?
-        };
+        let main_results = storage
+            .read_file_chunks_scoped(&params.filepath, codebase_id)
+            .await
+            .map_err(mcp_error)?;
+
+        let shadow_ids: std::collections::HashSet<String> =
+            shadow_results.iter().map(|r| r.chunk_id.clone()).collect();
+        let mut results = main_results
+            .into_iter()
+            .filter(|r| !shadow_ids.contains(&r.chunk_id))
+            .collect::<Vec<_>>();
+        results.extend(shadow_results);
 
         if results.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(format!(
@@ -213,32 +262,42 @@ impl KtServer {
         );
 
         let storage = self.inner.storage.read().await;
+        let codebase = storage
+            .register_codebase(root, params.codebase_alias.as_deref())
+            .await
+            .map_err(mcp_error)?;
         let embedding_guard = self.inner.embedding.read().await;
         let engine = embedding_guard
             .as_ref()
             .ok_or_else(|| mcp_error("Embedding engine not available"))?;
 
-        let plan = crate::sync::plan(root, &storage, full)
+        let plan = crate::sync::plan(root, &storage, &codebase, full)
             .await
             .map_err(mcp_error)?;
 
         if plan.files.is_empty() {
+            crate::sync::finalize(root, &codebase, &plan.strategy, &storage)
+                .await
+                .map_err(mcp_error)?;
             return Ok(CallToolResult::success(vec![Content::text(
                 "<result>No supported files found to sync</result>".to_string(),
             )]));
         }
 
         let mut progress = crate::sync::NoopProgress;
-        let stats = crate::sync::execute(&plan, &storage, engine, &mut progress)
+        let stats = crate::sync::execute(&plan, &codebase, &storage, engine, &mut progress)
             .await
             .map_err(mcp_error)?;
 
-        crate::sync::finalize(root, &plan.strategy, &storage)
+        crate::sync::finalize(root, &codebase, &plan.strategy, &storage)
             .await
             .map_err(mcp_error)?;
 
         let msg = format!(
-            "<result>Sync complete: {} files, {} chunks indexed, {} errors</result>",
+            "<result codebase_id=\"{}\" codebase_alias=\"{}\" root_path=\"{}\">Sync complete: {} files, {} chunks indexed, {} errors</result>",
+            xml_escape(&codebase.codebase_id),
+            xml_escape(codebase.alias.as_deref().unwrap_or("")),
+            xml_escape(&codebase.root_path),
             stats.total_files, stats.total_chunks, stats.errors
         );
         info!("{msg}");
@@ -296,12 +355,16 @@ impl KtServer {
         }
 
         let storage = self.inner.storage.read().await;
+        let codebase = storage
+            .register_codebase(root, None)
+            .await
+            .map_err(mcp_error)?;
         storage.ensure_shadow_index().await.map_err(mcp_error)?;
 
         let base_ref = params.base_branch.as_deref().unwrap_or("main");
         let ttl_seconds = params.ttl_seconds.unwrap_or(7200);
 
-        let changed_files = git::get_diff_files(root, base_ref).map_err(mcp_error)?;
+        let changed_files = git::get_worktree_diff_files(root, base_ref).map_err(mcp_error)?;
 
         if changed_files.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -335,7 +398,8 @@ impl KtServer {
             }
 
             let language = language.unwrap();
-            let chunks = crate::indexing::parse_file(&file_path, filepath, language);
+            let chunks =
+                crate::indexing::parse_file(&file_path, filepath, language, &codebase.codebase_id);
 
             if chunks.is_empty() {
                 continue;
@@ -361,11 +425,45 @@ impl KtServer {
         }
 
         let msg = format!(
-            "<shadow_index files=\"{}\" chunks=\"{}\" ttl=\"{}\" base=\"{}\" />",
-            total_files, total_chunks, ttl_seconds, base_ref
+            "<shadow_index codebase_id=\"{}\" codebase_alias=\"{}\" root_path=\"{}\" files=\"{}\" chunks=\"{}\" ttl=\"{}\" base=\"{}\" />",
+            xml_escape(&codebase.codebase_id),
+            xml_escape(codebase.alias.as_deref().unwrap_or("")),
+            xml_escape(&codebase.root_path),
+            total_files,
+            total_chunks,
+            ttl_seconds,
+            base_ref
         );
         info!("{msg}");
         Ok(CallToolResult::success(vec![Content::text(msg)]))
+    }
+
+    #[tool(
+        description = "List indexed codebases, including codebase_id, alias, root path, last synced commit, and indexed status."
+    )]
+    async fn kt_list_codebases(
+        &self,
+        Parameters(_params): Parameters<ListCodebasesParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.ensure_ready().await.map_err(mcp_error)?;
+
+        let storage = self.inner.storage.read().await;
+        let codebases = storage.list_codebases().await.map_err(mcp_error)?;
+
+        let mut xml = "<codebases>\n".to_string();
+        for codebase in codebases {
+            xml.push_str(&format!(
+                "  <codebase codebase_id=\"{}\" codebase_alias=\"{}\" root_path=\"{}\" last_synced_commit=\"{}\" indexed=\"{}\" />\n",
+                xml_escape(&codebase.codebase_id),
+                xml_escape(codebase.alias.as_deref().unwrap_or("")),
+                xml_escape(&codebase.root_path),
+                xml_escape(codebase.last_synced_commit.as_deref().unwrap_or("")),
+                codebase.indexed
+            ));
+        }
+        xml.push_str("</codebases>");
+
+        Ok(CallToolResult::success(vec![Content::text(xml)]))
     }
 }
 
@@ -377,7 +475,7 @@ impl ServerHandler for KtServer {
         )
         .with_server_info(Implementation::new("kt", env!("CARGO_PKG_VERSION")))
         .with_instructions(
-            "kt (Knowledge Transfer) - A local codebase RAG system. Use kt_search for semantic code search, kt_read_file to read specific files, and kt_sync to index/update a directory.".to_string(),
+            "kt (Knowledge Transfer) - A local multi-codebase RAG system. Use kt_search for global semantic code search, kt_read_file to read specific files across codebases, kt_sync to index/update a directory, and kt_list_codebases to discover aliases and roots. Scope search/read with directory_path or codebase_alias when needed.".to_string(),
         )
     }
 }
@@ -409,6 +507,15 @@ fn parse_language(s: &str) -> Option<Language> {
         "java" => Some(Language::Java),
         _ => None,
     }
+}
+
+async fn resolve_codebase_selector(
+    storage: &Storage,
+    directory_path: Option<&str>,
+    codebase_alias: Option<&str>,
+) -> anyhow::Result<Option<crate::Codebase>> {
+    let directory = directory_path.map(std::path::Path::new);
+    storage.resolve_codebase(directory, codebase_alias).await
 }
 
 fn deduplicate_results(results: Vec<SearchResult>) -> Vec<SearchResult> {
@@ -450,32 +557,44 @@ fn merge_and_deduplicate(
 async fn resolve_one_hop_context(
     storage: &Storage,
     results: &[SearchResult],
-) -> std::collections::HashMap<String, SearchResult> {
+) -> std::collections::HashMap<(String, String), SearchResult> {
     let mut context_map = std::collections::HashMap::new();
-    let mut needed_names: Vec<String> = Vec::new();
+    let mut needed_by_codebase: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
 
     for result in results {
         if let Some(ref parent_ctx) = result.parent_context {
             if let Some(name) = extract_parent_type_name(parent_ctx) {
-                if !context_map.contains_key(&name) && !needed_names.contains(&name) {
-                    needed_names.push(name);
+                let key = (result.codebase_id.clone(), name.clone());
+                if !context_map.contains_key(&key) {
+                    let names = needed_by_codebase
+                        .entry(result.codebase_id.clone())
+                        .or_default();
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
                 }
             }
         }
     }
 
-    if needed_names.is_empty() {
+    if needed_by_codebase.is_empty() {
         return context_map;
     }
 
-    match storage.lookup_chunks_by_name(&needed_names).await {
-        Ok(parent_results) => {
-            for pr in parent_results {
-                context_map.insert(pr.name.clone(), pr);
+    for (codebase_id, needed_names) in needed_by_codebase {
+        match storage
+            .lookup_chunks_by_name_scoped(&needed_names, Some(&codebase_id))
+            .await
+        {
+            Ok(parent_results) => {
+                for pr in parent_results {
+                    context_map.insert((pr.codebase_id.clone(), pr.name.clone()), pr);
+                }
             }
-        }
-        Err(e) => {
-            warn!("Failed to resolve one-hop context: {e}");
+            Err(e) => {
+                warn!("Failed to resolve one-hop context: {e}");
+            }
         }
     }
 
@@ -582,7 +701,7 @@ fn format_search_results(
     results: &[SearchResult],
     query: &str,
     headers_only: bool,
-    one_hop: &std::collections::HashMap<String, SearchResult>,
+    one_hop: &std::collections::HashMap<(String, String), SearchResult>,
 ) -> String {
     let mut xml = format!("<search_results query=\"{}\">\n", xml_escape(query));
     let mut total_len = 0usize;
@@ -595,9 +714,9 @@ fn format_search_results(
         };
 
         let parent_xml = if let Some(ref parent_ctx) = result.parent_context {
-            if let Some(parent_result) =
-                extract_parent_type_name(parent_ctx).and_then(|name| one_hop.get(&name))
-            {
+            let parent_key =
+                extract_parent_type_name(parent_ctx).map(|name| (result.codebase_id.clone(), name));
+            if let Some(parent_result) = parent_key.as_ref().and_then(|key| one_hop.get(key)) {
                 format!(
                     "  <parent_struct>\n    {}\n  </parent_struct>\n",
                     xml_escape(&parent_result.content)
@@ -610,7 +729,10 @@ fn format_search_results(
         };
 
         let chunk_xml = format!(
-            "  <chunk filepath=\"{}\" language=\"{}\" type=\"{}\" name=\"{}\" signature=\"{}\" score=\"{:.4}\">\n{}    {}\n  </chunk>\n",
+            "  <chunk codebase_id=\"{}\" codebase_alias=\"{}\" root_path=\"{}\" filepath=\"{}\" language=\"{}\" type=\"{}\" name=\"{}\" signature=\"{}\" score=\"{:.4}\">\n{}    {}\n  </chunk>\n",
+            xml_escape(&result.codebase_id),
+            xml_escape(result.codebase_alias.as_deref().unwrap_or("")),
+            xml_escape(&result.root_path),
             xml_escape(&result.filepath),
             result.language,
             xml_escape(&result.node_type),
@@ -631,13 +753,31 @@ fn format_search_results(
 }
 
 fn format_file_results(results: &[SearchResult], filepath: &str, headers_only: bool) -> String {
-    let mut xml = format!("<file filepath=\"{}\">\n", xml_escape(filepath));
+    let mut xml = format!("<files filepath=\"{}\">\n", xml_escape(filepath));
     let mut ordered = results.iter().collect::<Vec<_>>();
     ordered.sort_by(|a, b| {
-        (a.start_line, a.end_line, &a.chunk_id).cmp(&(b.start_line, b.end_line, &b.chunk_id))
+        (&a.codebase_id, a.start_line, a.end_line, &a.chunk_id).cmp(&(
+            &b.codebase_id,
+            b.start_line,
+            b.end_line,
+            &b.chunk_id,
+        ))
     });
 
+    let mut current_codebase: Option<&str> = None;
     for result in ordered {
+        if current_codebase != Some(result.codebase_id.as_str()) {
+            if current_codebase.is_some() {
+                xml.push_str("  </codebase>\n");
+            }
+            current_codebase = Some(result.codebase_id.as_str());
+            xml.push_str(&format!(
+                "  <codebase codebase_id=\"{}\" codebase_alias=\"{}\" root_path=\"{}\">\n",
+                xml_escape(&result.codebase_id),
+                xml_escape(result.codebase_alias.as_deref().unwrap_or("")),
+                xml_escape(&result.root_path),
+            ));
+        }
         let content = if headers_only {
             xml_escape(&result.signature)
         } else {
@@ -650,7 +790,7 @@ fn format_file_results(results: &[SearchResult], filepath: &str, headers_only: b
             _ => String::new(),
         };
         xml.push_str(&format!(
-            "  <chunk type=\"{}\" name=\"{}\" signature=\"{}\"{}>\n    {}\n  </chunk>\n",
+            "    <chunk type=\"{}\" name=\"{}\" signature=\"{}\"{}>\n      {}\n    </chunk>\n",
             xml_escape(&result.node_type),
             xml_escape(&result.name),
             xml_escape(&result.signature),
@@ -658,7 +798,10 @@ fn format_file_results(results: &[SearchResult], filepath: &str, headers_only: b
             content,
         ));
     }
-    xml.push_str("</file>");
+    if current_codebase.is_some() {
+        xml.push_str("  </codebase>\n");
+    }
+    xml.push_str("</files>");
     xml
 }
 
@@ -676,6 +819,9 @@ mod tests {
     fn sample_result(chunk_id: &str, score: f64) -> SearchResult {
         SearchResult {
             chunk_id: chunk_id.to_string(),
+            codebase_id: "codebase-a".to_string(),
+            codebase_alias: Some("alpha".to_string()),
+            root_path: "/tmp/alpha".to_string(),
             filepath: "src/example.rs".to_string(),
             language: Language::Rust,
             node_type: "function".to_string(),
@@ -696,6 +842,9 @@ mod tests {
     ) -> SearchResult {
         SearchResult {
             chunk_id: chunk_id.to_string(),
+            codebase_id: "codebase-a".to_string(),
+            codebase_alias: Some("alpha".to_string()),
+            root_path: "/tmp/alpha".to_string(),
             filepath: "src/example.rs".to_string(),
             language: Language::Rust,
             node_type: "function".to_string(),
@@ -756,7 +905,24 @@ mod tests {
         let earlier = xml.find("name_earlier").unwrap();
         let later = xml.find("name_later").unwrap();
         assert!(earlier < later);
+        assert!(xml.contains("<files filepath=\"src/example.rs\">"));
+        assert!(xml.contains("codebase_id=\"codebase-a\""));
+        assert!(xml.contains("codebase_alias=\"alpha\""));
+        assert!(xml.contains("root_path=\"/tmp/alpha\""));
         assert!(xml.contains("start_line=\"2\" end_line=\"4\""));
         assert!(xml.contains("start_line=\"10\" end_line=\"12\""));
+    }
+
+    #[test]
+    fn test_format_search_results_emits_codebase_metadata() {
+        let results = vec![sample_result("result", 0.1)];
+        let one_hop = std::collections::HashMap::new();
+
+        let xml = format_search_results(&results, "query", false, &one_hop);
+
+        assert!(xml.contains("codebase_id=\"codebase-a\""));
+        assert!(xml.contains("codebase_alias=\"alpha\""));
+        assert!(xml.contains("root_path=\"/tmp/alpha\""));
+        assert!(xml.contains("filepath=\"src/example.rs\""));
     }
 }

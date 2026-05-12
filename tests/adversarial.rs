@@ -261,8 +261,19 @@ async fn test_newlines_in_filepath() {
 }
 
 fn test_chunk(filepath: &str, name: &str, start_line: usize, end_line: usize) -> Chunk {
+    test_chunk_in_codebase("adversarial-codebase", filepath, name, start_line, end_line)
+}
+
+fn test_chunk_in_codebase(
+    codebase_id: &str,
+    filepath: &str,
+    name: &str,
+    start_line: usize,
+    end_line: usize,
+) -> Chunk {
     Chunk {
-        chunk_id: Chunk::generate_id(filepath, name, start_line),
+        chunk_id: Chunk::generate_id(codebase_id, filepath, name, start_line),
+        codebase_id: codebase_id.to_string(),
         filepath: filepath.to_string(),
         language: Language::Rust,
         node_type: "function".to_string(),
@@ -314,4 +325,193 @@ async fn test_read_file_chunks_returns_source_order_with_line_ranges() {
     );
 
     storage.remove_file_chunks(filepath).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_same_file_and_symbol_are_scoped_by_codebase() {
+    let storage = make_storage().await;
+    let suffix = fastrand::u64(..);
+    let codebase_a = format!("test-codebase-a-{suffix}");
+    let codebase_b = format!("test-codebase-b-{suffix}");
+    let filepath = format!("tests/fixtures/multi_codebase_{suffix}/src/lib.rs");
+
+    let chunks = vec![
+        test_chunk_in_codebase(&codebase_a, &filepath, "shared_symbol", 0, 4),
+        test_chunk_in_codebase(&codebase_b, &filepath, "shared_symbol", 0, 4),
+    ];
+    let embeddings = vec![vec![0.0f32; 384]; chunks.len()];
+
+    storage
+        .store_chunks_batch(&chunks, &embeddings, None)
+        .await
+        .unwrap();
+
+    let global = storage.read_file_chunks(&filepath).await.unwrap();
+    assert_eq!(global.len(), 2, "global read should return both codebases");
+
+    let scoped_a = storage
+        .read_file_chunks_scoped(&filepath, Some(&codebase_a))
+        .await
+        .unwrap();
+    let scoped_b = storage
+        .read_file_chunks_scoped(&filepath, Some(&codebase_b))
+        .await
+        .unwrap();
+    assert_eq!(scoped_a.len(), 1);
+    assert_eq!(scoped_b.len(), 1);
+    assert_eq!(scoped_a[0].codebase_id, codebase_a);
+    assert_eq!(scoped_b[0].codebase_id, codebase_b);
+    assert_ne!(scoped_a[0].chunk_id, scoped_b[0].chunk_id);
+
+    let removed = storage
+        .remove_file_chunks_scoped(&codebase_a, &filepath)
+        .await
+        .unwrap();
+    assert_eq!(removed, 1);
+
+    let remaining = storage.read_file_chunks(&filepath).await.unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].codebase_id, codebase_b);
+
+    storage
+        .remove_file_chunks_scoped(&codebase_b, &filepath)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_file_mtimes_are_scoped_by_codebase() {
+    let storage = make_storage().await;
+    let suffix = fastrand::u64(..);
+    let codebase_a = format!("mtime-codebase-a-{suffix}");
+    let codebase_b = format!("mtime-codebase-b-{suffix}");
+    let filepath = format!("tests/fixtures/mtime_{suffix}/src/lib.rs");
+
+    let chunks = vec![
+        test_chunk_in_codebase(&codebase_a, &filepath, "mtime_symbol", 0, 4),
+        test_chunk_in_codebase(&codebase_b, &filepath, "mtime_symbol", 0, 4),
+    ];
+    let embeddings = vec![vec![0.0f32; 384]; chunks.len()];
+    let mtimes = vec!["111".to_string(), "222".to_string()];
+
+    storage
+        .store_chunks_batch(&chunks, &embeddings, Some(&mtimes))
+        .await
+        .unwrap();
+
+    let mtimes_a = storage.get_file_mtimes(Some(&codebase_a)).await.unwrap();
+    let mtimes_b = storage.get_file_mtimes(Some(&codebase_b)).await.unwrap();
+    assert_eq!(mtimes_a.get(&filepath).map(String::as_str), Some("111"));
+    assert_eq!(mtimes_b.get(&filepath).map(String::as_str), Some("222"));
+
+    storage
+        .remove_file_chunks_scoped(&codebase_a, &filepath)
+        .await
+        .unwrap();
+    storage
+        .remove_file_chunks_scoped(&codebase_b, &filepath)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_codebase_alias_registration_and_resolution() {
+    let storage = make_storage().await;
+    let suffix = fastrand::u64(..);
+    let alias = format!("alias-{suffix}");
+    let other_alias = format!("other-alias-{suffix}");
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+
+    let codebase = storage
+        .register_codebase(dir_a.path(), Some(&alias))
+        .await
+        .unwrap();
+
+    let by_alias = storage
+        .resolve_codebase(None, Some(&alias))
+        .await
+        .unwrap()
+        .unwrap();
+    let by_path = storage
+        .resolve_codebase(Some(dir_a.path()), None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(by_alias.codebase_id, codebase.codebase_id);
+    assert_eq!(by_path.codebase_id, codebase.codebase_id);
+    assert_eq!(by_alias.alias.as_deref(), Some(alias.as_str()));
+
+    let duplicate = storage.register_codebase(dir_b.path(), Some(&alias)).await;
+    assert!(
+        duplicate
+            .unwrap_err()
+            .to_string()
+            .contains("already points"),
+        "duplicate alias should produce a clear error"
+    );
+
+    storage
+        .register_codebase(dir_b.path(), Some(&other_alias))
+        .await
+        .unwrap();
+    let mismatch = storage
+        .resolve_codebase(Some(dir_b.path()), Some(&alias))
+        .await;
+    assert!(
+        mismatch
+            .unwrap_err()
+            .to_string()
+            .contains("directory_path resolves"),
+        "path/alias mismatch should produce a clear error"
+    );
+}
+
+#[tokio::test]
+async fn test_concurrent_codebase_alias_registration_allows_only_one_owner() {
+    let storage = make_storage().await;
+    let alias = format!("concurrent-alias-{}", fastrand::u64(..));
+    let dirs = (0..64)
+        .map(|_| tempfile::tempdir().unwrap())
+        .collect::<Vec<_>>();
+
+    let mut tasks = Vec::new();
+    for dir in &dirs {
+        let storage = storage.clone();
+        let alias = alias.clone();
+        let path = dir.path().to_path_buf();
+        tasks.push(tokio::spawn(async move {
+            storage
+                .register_codebase(&path, Some(&alias))
+                .await
+                .map(|codebase| codebase.codebase_id)
+        }));
+    }
+
+    let mut successful_ids = Vec::new();
+    for task in tasks {
+        if let Ok(Ok(id)) = task.await {
+            successful_ids.push(id);
+        }
+    }
+    successful_ids.sort();
+    successful_ids.dedup();
+
+    assert_eq!(
+        successful_ids.len(),
+        1,
+        "only one codebase may claim a concurrently registered alias"
+    );
+
+    let listed = storage.list_codebases().await.unwrap();
+    let aliases = listed
+        .iter()
+        .filter(|codebase| codebase.alias.as_deref() == Some(alias.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        aliases.len(),
+        1,
+        "registry must not contain duplicate codebase hashes with the same alias"
+    );
+    assert_eq!(aliases[0].codebase_id, successful_ids[0]);
 }

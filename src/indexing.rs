@@ -7,7 +7,12 @@ mod languages;
 
 pub use languages::LanguageConfig;
 
-pub fn parse_file(path: &Path, relative_path: &str, language: Language) -> Vec<Chunk> {
+pub fn parse_file(
+    path: &Path,
+    relative_path: &str,
+    language: Language,
+    codebase_id: &str,
+) -> Vec<Chunk> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -28,13 +33,20 @@ pub fn parse_file(path: &Path, relative_path: &str, language: Language) -> Vec<C
     }
 
     match parser.parse(&source, None) {
-        Some(tree) => extract_chunks(&tree, &source, relative_path, language, &config),
+        Some(tree) => extract_chunks(
+            &tree,
+            &source,
+            relative_path,
+            language,
+            &config,
+            codebase_id,
+        ),
         None => {
             warn!(
                 "Tree-sitter parse failed for {}, falling back to line splitting",
                 path.display()
             );
-            fallback_line_chunks(&source, relative_path, language)
+            fallback_line_chunks(&source, relative_path, language, codebase_id)
         }
     }
 }
@@ -45,56 +57,53 @@ fn extract_chunks(
     relative_path: &str,
     language: Language,
     config: &LanguageConfig,
+    codebase_id: &str,
 ) -> Vec<Chunk> {
     let root = tree.root_node();
     let mut chunks = Vec::new();
     let mut cursor = root.walk();
-
-    collect_chunks(
-        &mut cursor,
+    let ctx = ExtractionContext {
         source,
         relative_path,
         language,
         config,
-        &mut chunks,
-        None,
-    );
+        codebase_id,
+    };
+
+    collect_chunks(&mut cursor, &ctx, &mut chunks, None);
 
     chunks
 }
 
+struct ExtractionContext<'a> {
+    source: &'a str,
+    relative_path: &'a str,
+    language: Language,
+    config: &'a LanguageConfig,
+    codebase_id: &'a str,
+}
+
 fn collect_chunks<'a>(
     cursor: &mut tree_sitter::TreeCursor<'a>,
-    source: &'a str,
-    relative_path: &str,
-    language: Language,
-    config: &LanguageConfig,
+    ctx: &ExtractionContext<'a>,
     chunks: &mut Vec<Chunk>,
     parent_context: Option<ParentContext>,
 ) {
     let node = cursor.node();
     let node_type = node.kind();
 
-    if config.is_target_node(node_type) {
-        if let Some(chunk) = build_chunk(node, source, relative_path, language, &parent_context) {
+    if ctx.config.is_target_node(node_type) {
+        if let Some(chunk) = build_chunk(node, ctx, &parent_context) {
             chunks.push(chunk);
         }
     }
 
-    let child_context = build_child_context(node, source, config);
-    let ctx = child_context.or(parent_context);
+    let child_context = build_child_context(node, ctx.source, ctx.config);
+    let next_parent_context = child_context.or(parent_context);
 
     if cursor.goto_first_child() {
         loop {
-            collect_chunks(
-                cursor,
-                source,
-                relative_path,
-                language,
-                config,
-                chunks,
-                ctx.clone(),
-            );
+            collect_chunks(cursor, ctx, chunks, next_parent_context.clone());
             if !cursor.goto_next_sibling() {
                 break;
             }
@@ -111,19 +120,17 @@ struct ParentContext {
 
 fn build_chunk(
     node: Node,
-    source: &str,
-    relative_path: &str,
-    language: Language,
+    ctx: &ExtractionContext<'_>,
     parent_context: &Option<ParentContext>,
 ) -> Option<Chunk> {
-    let content = node_text(node, source);
+    let content = node_text(node, ctx.source);
     if content.trim().is_empty() {
         return None;
     }
 
-    let name = extract_name(node, source)?;
+    let name = extract_name(node, ctx.source)?;
     let node_type = normalize_node_type(node.kind());
-    let signature = extract_signature(node, source);
+    let signature = extract_signature(node, ctx.source);
     let start_line = node.start_position().row;
     let end_line = node.end_position().row;
 
@@ -140,12 +147,13 @@ fn build_chunk(
 
     let parent_ctx_str = parent_context.as_ref().map(|ctx| ctx.header.clone());
 
-    let chunk_id = Chunk::generate_id(relative_path, &name, start_line);
+    let chunk_id = Chunk::generate_id(ctx.codebase_id, ctx.relative_path, &name, start_line);
 
     Some(Chunk {
         chunk_id,
-        filepath: relative_path.to_string(),
-        language,
+        codebase_id: ctx.codebase_id.to_string(),
+        filepath: ctx.relative_path.to_string(),
+        language: ctx.language,
         node_type,
         name,
         signature,
@@ -269,7 +277,12 @@ fn normalize_node_type(kind: &str) -> String {
     }
 }
 
-fn fallback_line_chunks(source: &str, relative_path: &str, language: Language) -> Vec<Chunk> {
+fn fallback_line_chunks(
+    source: &str,
+    relative_path: &str,
+    language: Language,
+    codebase_id: &str,
+) -> Vec<Chunk> {
     let lines: Vec<&str> = source.lines().collect();
     let chunk_size = 30;
     let mut chunks = Vec::new();
@@ -279,10 +292,11 @@ fn fallback_line_chunks(source: &str, relative_path: &str, language: Language) -
         let end_line = start_line + chunk_lines.len().saturating_sub(1);
         let content = chunk_lines.join("\n");
         let name = format!("lines_{}_{}", start_line, end_line);
-        let chunk_id = Chunk::generate_id(relative_path, &name, start_line);
+        let chunk_id = Chunk::generate_id(codebase_id, relative_path, &name, start_line);
 
         chunks.push(Chunk {
             chunk_id,
+            codebase_id: codebase_id.to_string(),
             filepath: relative_path.to_string(),
             language,
             node_type: "text_block".to_string(),
@@ -314,7 +328,14 @@ fn hello_world() -> String {
         parser.set_language(&config.tree_sitter_language()).unwrap();
         let tree = parser.parse(source, None).unwrap();
 
-        let chunks = extract_chunks(&tree, source, "test.rs", Language::Rust, &config);
+        let chunks = extract_chunks(
+            &tree,
+            source,
+            "test.rs",
+            Language::Rust,
+            &config,
+            "test-codebase",
+        );
         assert!(!chunks.is_empty());
         assert_eq!(chunks[0].node_type, "function");
         assert_eq!(chunks[0].name, "hello_world");
@@ -338,7 +359,14 @@ impl Foo {
         parser.set_language(&config.tree_sitter_language()).unwrap();
         let tree = parser.parse(source, None).unwrap();
 
-        let chunks = extract_chunks(&tree, source, "test.rs", Language::Rust, &config);
+        let chunks = extract_chunks(
+            &tree,
+            source,
+            "test.rs",
+            Language::Rust,
+            &config,
+            "test-codebase",
+        );
         assert!(chunks.len() >= 2);
 
         let impl_fn = chunks
@@ -353,7 +381,7 @@ impl Foo {
     #[test]
     fn test_fallback_line_chunks() {
         let source = "line1\nline2\nline3\nline4\n";
-        let chunks = fallback_line_chunks(source, "test.rs", Language::Rust);
+        let chunks = fallback_line_chunks(source, "test.rs", Language::Rust, "test-codebase");
         assert!(!chunks.is_empty());
         assert_eq!(chunks[0].node_type, "text_block");
     }
@@ -363,7 +391,12 @@ impl Foo {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("nonexistent.rs");
 
-        let chunks = parse_file(&file_path, "nonexistent.rs", Language::Rust);
+        let chunks = parse_file(
+            &file_path,
+            "nonexistent.rs",
+            Language::Rust,
+            "test-codebase",
+        );
 
         assert!(
             chunks.is_empty(),
