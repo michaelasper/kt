@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.6.1 (2026-05-12)</small>
+
+* fix(config): apply global settings at runtime ([f1d5f0f](https://github.com/michaelasper/kt/commit/f1d5f0f))
+
 ## 0.6.0 (2026-05-12)
 
 * feat(search): improve abstract retrieval recall ([5f0697d](https://github.com/michaelasper/kt/commit/5f0697d))
