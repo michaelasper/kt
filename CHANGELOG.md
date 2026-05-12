@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.6.2 (2026-05-12)</small>
+
+* fix(mcp): surface shadow index failures ([a09bded](https://github.com/michaelasper/kt/commit/a09bded)), closes [#12](https://github.com/michaelasper/kt/issues/12)
+
 ## <small>0.6.1 (2026-05-12)</small>
 
 * fix(config): apply global settings at runtime ([f1d5f0f](https://github.com/michaelasper/kt/commit/f1d5f0f))
