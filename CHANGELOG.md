@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.5.5 (2026-05-12)</small>
+
+* fix: force a release release ([91eca03](https://github.com/michaelasper/kt/commit/91eca03))
+* Add multi-codebase indexing support ([f14586c](https://github.com/michaelasper/kt/commit/f14586c))
+* Add shadow read ordering regression ([2ced9be](https://github.com/michaelasper/kt/commit/2ced9be))
+* Fix git base ref resolution ([995cf71](https://github.com/michaelasper/kt/commit/995cf71))
+* Fix kt_read_file source ordering ([bf89611](https://github.com/michaelasper/kt/commit/bf89611))
+* Merge pull request #38 from michaelasper/multi-codebase-indexing ([09d74c1](https://github.com/michaelasper/kt/commit/09d74c1)), closes [#38](https://github.com/michaelasper/kt/issues/38)
+* security: add SHA256 verification for model downloads, size check for binary upgrades ([d964104](https://github.com/michaelasper/kt/commit/d964104)), closes [#30](https://github.com/michaelasper/kt/issues/30) [#4](https://github.com/michaelasper/kt/issues/4)
+* style: apply cargo fmt formatting ([b26dcbc](https://github.com/michaelasper/kt/commit/b26dcbc))
+* refactor: split storage.rs into focused modules, fix N+1 query pattern ([115c267](https://github.com/michaelasper/kt/commit/115c267)), closes [#6](https://github.com/michaelasper/kt/issues/6)
+
 ## <small>0.5.4 (2026-05-11)</small>
 
 * perf(embedding): implement true batched ONNX inference in embed_batch ([a8a0d7e](https://github.com/michaelasper/kt/commit/a8a0d7e)), closes [#5](https://github.com/michaelasper/kt/issues/5)
