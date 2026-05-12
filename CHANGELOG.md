@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.6.0 (2026-05-12)
+
+* feat(search): improve abstract retrieval recall ([5f0697d](https://github.com/michaelasper/kt/commit/5f0697d))
+
 ## <small>0.5.6 (2026-05-12)</small>
 
 * fix(storage): reject invalid language metadata ([dd6a0be](https://github.com/michaelasper/kt/commit/dd6a0be))
