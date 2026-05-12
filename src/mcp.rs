@@ -405,8 +405,12 @@ impl KtServer {
                 continue;
             }
 
-            let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-            match engine.embed_batch(&texts) {
+            let texts: Vec<String> = chunks
+                .iter()
+                .map(crate::embedding::chunk_embedding_text)
+                .collect();
+            let text_refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+            match engine.embed_batch(&text_refs) {
                 Ok(embeddings) => {
                     if let Err(e) = storage
                         .store_shadow_chunks_batch(&chunks, &embeddings, ttl_seconds)

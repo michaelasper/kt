@@ -1,6 +1,7 @@
 use crate::{Language, SearchResult};
 use redis::{cmd, Cmd, Pipeline};
 use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use tracing::{debug, warn};
 
 const SEARCH_RETURN_FIELDS: [&str; 11] = [
@@ -17,6 +18,7 @@ const SEARCH_RETURN_FIELDS: [&str; 11] = [
     "end_line",
 ];
 const READ_FILE_PAGE_SIZE: usize = 1000;
+const RRF_CONSTANT: f64 = 60.0;
 
 struct SearchPage {
     total_count: usize,
@@ -273,7 +275,7 @@ fn escape_fts_query(query: &str) -> String {
         }
         match ch {
             '\\' | '"' | '\'' | '(' | ')' | ':' | '{' | '}' | '|' | '@' | '!' | '-' | '*' | '['
-            | ']' | ';' | ',' | '.' | '~' | '%' | '^' | '&' | '#' | '<' | '>' | '/' | '$' => {
+            | ']' | ';' | ',' | '.' | '~' | '%' | '^' | '&' | '#' | '<' | '>' | '/' | '$' | '?' => {
                 result.push('\\');
                 result.push(ch);
             }
@@ -332,21 +334,39 @@ fn combine_filters_and_text(filters: &[String], text_query: Option<String>) -> S
     }
 }
 
-pub(crate) fn build_hybrid_query(
+pub(crate) fn candidate_limit(top_k: usize) -> usize {
+    if top_k == 0 {
+        0
+    } else {
+        top_k.saturating_mul(5).clamp(25, 100)
+    }
+}
+
+pub(crate) fn build_semantic_query(
     query_text: &str,
     language: Option<&Language>,
     codebase_id: Option<&str>,
-    top_k: usize,
+    candidate_limit: usize,
 ) -> String {
-    let effective_query = query_text.trim();
+    let _ = query_text;
     let filters = build_scope_filters(language, codebase_id);
-    let text_query = if effective_query.is_empty() {
-        None
-    } else {
-        Some(escape_fts_query(effective_query))
-    };
-    let base = combine_filters_and_text(&filters, text_query);
-    format!("{base}=>[KNN {top_k} @embedding $query_vec AS vector_score]")
+    let base = combine_filters_and_text(&filters, None);
+    format!("{base}=>[KNN {candidate_limit} @embedding $query_vec AS vector_score]")
+}
+
+pub(crate) fn build_lexical_query(
+    query_text: &str,
+    language: Option<&Language>,
+    codebase_id: Option<&str>,
+) -> Option<String> {
+    let effective_query = query_text.trim();
+    if effective_query.is_empty() {
+        return None;
+    }
+
+    let filters = build_scope_filters(language, codebase_id);
+    let text_query = Some(escape_fts_query(effective_query));
+    Some(combine_filters_and_text(&filters, text_query))
 }
 
 pub(crate) fn build_file_query(filepath: &str, codebase_id: Option<&str>) -> String {
@@ -376,17 +396,22 @@ pub(super) async fn hybrid_search_impl(
     codebase_id: Option<&str>,
     top_k: usize,
 ) -> anyhow::Result<Vec<SearchResult>> {
+    if top_k == 0 {
+        return Ok(Vec::new());
+    }
+
+    let limit = candidate_limit(top_k);
     let embedding_bytes: Vec<u8> = query_embedding
         .iter()
         .flat_map(|f| f.to_le_bytes())
         .collect();
 
-    let query_str = build_hybrid_query(query_text, language, codebase_id, top_k);
-    debug!("Hybrid search query: {}", query_str);
+    let semantic_query = build_semantic_query(query_text, language, codebase_id, limit);
+    debug!("Semantic search query: {}", semantic_query);
 
-    let result: redis::Value = cmd("FT.SEARCH")
+    let semantic_result: redis::Value = cmd("FT.SEARCH")
         .arg(index_name)
-        .arg(&query_str)
+        .arg(&semantic_query)
         .arg("PARAMS")
         .arg(2)
         .arg("query_vec")
@@ -398,11 +423,105 @@ pub(super) async fn hybrid_search_impl(
         .arg("ASC")
         .arg("LIMIT")
         .arg(0)
-        .arg(top_k)
+        .arg(limit)
         .query_async(conn)
         .await?;
 
-    parse_search_results(result)
+    let semantic_results = parse_search_results(semantic_result)?;
+    let lexical_results =
+        if let Some(lexical_query) = build_lexical_query(query_text, language, codebase_id) {
+            debug!("Lexical search query: {}", lexical_query);
+            let lexical_result: redis::Value = cmd("FT.SEARCH")
+                .arg(index_name)
+                .arg(&lexical_query)
+                .arg("DIALECT")
+                .arg(2)
+                .arg("LIMIT")
+                .arg(0)
+                .arg(limit)
+                .query_async(conn)
+                .await?;
+            parse_search_results(lexical_result)?
+        } else {
+            Vec::new()
+        };
+
+    Ok(fuse_search_lanes(semantic_results, lexical_results, top_k))
+}
+
+struct FusedSearchResult {
+    result: SearchResult,
+    rrf_score: f64,
+    first_seen: usize,
+}
+
+pub(crate) fn fuse_search_lanes(
+    semantic_results: Vec<SearchResult>,
+    lexical_results: Vec<SearchResult>,
+    top_k: usize,
+) -> Vec<SearchResult> {
+    if top_k == 0 {
+        return Vec::new();
+    }
+
+    let mut fused: HashMap<String, FusedSearchResult> = HashMap::new();
+    let mut first_seen_counter = 0usize;
+
+    add_rrf_lane(&mut fused, &mut first_seen_counter, semantic_results);
+    add_rrf_lane(&mut fused, &mut first_seen_counter, lexical_results);
+
+    let mut results: Vec<FusedSearchResult> = fused.into_values().collect();
+    results.sort_by(|a, b| {
+        b.rrf_score
+            .partial_cmp(&a.rrf_score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.first_seen.cmp(&b.first_seen))
+            .then_with(|| a.result.chunk_id.cmp(&b.result.chunk_id))
+    });
+    results.truncate(top_k);
+
+    results
+        .into_iter()
+        .map(|mut fused| {
+            fused.result.score = if fused.rrf_score > 0.0 {
+                1.0 / fused.rrf_score
+            } else {
+                f64::INFINITY
+            };
+            fused.result
+        })
+        .collect()
+}
+
+fn add_rrf_lane(
+    fused: &mut HashMap<String, FusedSearchResult>,
+    first_seen_counter: &mut usize,
+    lane_results: Vec<SearchResult>,
+) {
+    let mut seen_in_lane = HashSet::new();
+
+    for (rank, result) in lane_results.into_iter().enumerate() {
+        if !seen_in_lane.insert(result.chunk_id.clone()) {
+            continue;
+        }
+
+        let contribution = 1.0 / (RRF_CONSTANT + rank as f64 + 1.0);
+        match fused.get_mut(&result.chunk_id) {
+            Some(existing) => existing.rrf_score += contribution,
+            None => {
+                let first_seen = *first_seen_counter;
+                *first_seen_counter += 1;
+                fused.insert(
+                    result.chunk_id.clone(),
+                    FusedSearchResult {
+                        result,
+                        rrf_score: contribution,
+                        first_seen,
+                    },
+                );
+            }
+        }
+    }
 }
 
 pub(super) async fn read_file_chunks_impl(
@@ -525,11 +644,33 @@ pub(super) async fn lookup_chunks_by_name_impl(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_file_query, build_hybrid_query, parse_search_results};
+    use super::{
+        build_file_query, build_lexical_query, build_semantic_query, candidate_limit,
+        fuse_search_lanes, parse_search_results,
+    };
     use crate::storage::index::is_index_not_found_error;
-    use crate::Language;
+    use crate::{Language, SearchResult};
     use redis::RedisError;
     use redis::Value;
+
+    fn sample_result(chunk_id: &str) -> SearchResult {
+        SearchResult {
+            chunk_id: chunk_id.to_string(),
+            codebase_id: "codebase-a".to_string(),
+            codebase_alias: None,
+            root_path: String::new(),
+            filepath: format!("src/{chunk_id}.rs"),
+            language: Language::Rust,
+            node_type: "function".to_string(),
+            name: chunk_id.to_string(),
+            signature: format!("fn {chunk_id}()"),
+            content: String::new(),
+            parent_context: None,
+            score: 0.0,
+            start_line: None,
+            end_line: None,
+        }
+    }
 
     #[test]
     fn index_not_found_error_matches_common_variants() {
@@ -694,23 +835,85 @@ mod tests {
     }
 
     #[test]
-    fn build_hybrid_query_omits_codebase_filter_when_unscoped() {
-        let query = build_hybrid_query("function", None, None, 3);
+    fn build_semantic_query_uses_wildcard_when_unscoped() {
+        let query = build_semantic_query("how does auth work", None, None, 25);
 
         assert!(!query.contains("@codebase_id"));
+        assert!(!query.contains("auth"));
+        assert_eq!(query, "*=>[KNN 25 @embedding $query_vec AS vector_score]");
+    }
+
+    #[test]
+    fn build_semantic_query_uses_only_hard_filters_when_scoped() {
+        let query = build_semantic_query(
+            "how does auth work",
+            Some(&Language::Rust),
+            Some("repo:one"),
+            25,
+        );
+
+        assert!(query.contains("@codebase_id:{repo\\:one}"));
+        assert!(query.contains("@language:{rust}"));
+        assert!(!query.contains("auth"));
         assert_eq!(
             query,
-            "(function)=>[KNN 3 @embedding $query_vec AS vector_score]"
+            "(@codebase_id:{repo\\:one} @language:{rust})=>[KNN 25 @embedding $query_vec AS vector_score]"
         );
     }
 
     #[test]
-    fn build_hybrid_query_includes_codebase_filter_when_scoped() {
-        let query = build_hybrid_query("function", Some(&Language::Rust), Some("abc123"), 3);
+    fn build_lexical_query_escapes_text_and_hard_filters() {
+        let query = build_lexical_query(
+            "auth: user-role? (admin)",
+            Some(&Language::Rust),
+            Some("repo:one"),
+        )
+        .unwrap();
 
-        assert!(query.contains("@codebase_id:{abc123}"));
-        assert!(query.contains("@language:{rust}"));
-        assert!(query.contains("(function)"));
+        assert_eq!(
+            query,
+            "(@codebase_id:{repo\\:one} @language:{rust} (auth\\: user\\-role\\? \\(admin\\)))"
+        );
+    }
+
+    #[test]
+    fn build_lexical_query_skips_empty_text() {
+        assert!(build_lexical_query(" \t\n", Some(&Language::Rust), Some("repo")).is_none());
+    }
+
+    #[test]
+    fn candidate_limit_scales_top_k_and_caps_work() {
+        assert_eq!(candidate_limit(0), 0);
+        assert_eq!(candidate_limit(1), 25);
+        assert_eq!(candidate_limit(5), 25);
+        assert_eq!(candidate_limit(10), 50);
+        assert_eq!(candidate_limit(30), 100);
+        assert_eq!(candidate_limit(usize::MAX), 100);
+    }
+
+    #[test]
+    fn fuse_search_lanes_rrf_deduplicates_sorts_and_truncates() {
+        let semantic = vec![sample_result("a"), sample_result("b"), sample_result("c")];
+        let lexical = vec![sample_result("c"), sample_result("a"), sample_result("d")];
+
+        let merged = fuse_search_lanes(semantic, lexical, 3);
+
+        assert_eq!(
+            merged
+                .iter()
+                .map(|r| r.chunk_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "c", "b"]
+        );
+        assert!(merged[0].score < merged[1].score);
+        assert!(merged[1].score < merged[2].score);
+    }
+
+    #[test]
+    fn fuse_search_lanes_returns_empty_for_zero_top_k() {
+        let merged = fuse_search_lanes(vec![sample_result("a")], vec![sample_result("b")], 0);
+
+        assert!(merged.is_empty());
     }
 
     #[test]

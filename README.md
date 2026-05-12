@@ -265,6 +265,12 @@ Scope searches or file reads with either `codebase_alias` or `directory_path`:
 
 Use `kt_list_codebases` to discover registered codebases, aliases, root paths, last synced commits, and indexed status. Unscoped `kt_read_file` returns grouped matches for the requested repo-relative filepath across all codebases.
 
+### Retrieval behavior
+
+`kt_search` keeps the same MCP parameters and XML output, but internally retrieves from two lanes: a vector-first semantic lane over only hard filters such as codebase and language, and a BM25 lexical lane for the query text. This improves recall for abstract questions because natural-language query words no longer pre-filter vector candidates.
+
+Existing indexes benefit from vector-first retrieval immediately after upgrading. Newly synced chunks also embed filepath, language, symbol metadata, parent context, and code content; run `kt sync --full <repo>` to re-embed an existing repository with that enriched input.
+
 ## Architecture Overview
 
 `kt` uses a local flow:

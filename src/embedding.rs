@@ -1,4 +1,4 @@
-use crate::{Config, KtError};
+use crate::{Chunk, Config, KtError};
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Tensor;
 use sha2::{Digest, Sha256};
@@ -16,6 +16,32 @@ const EXPECTED_TOKENIZER_SHA256: &str =
     "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037";
 const EMBEDDING_DIM: usize = 384;
 const BATCH_SIZE: usize = 32;
+
+pub(crate) fn chunk_embedding_text(chunk: &Chunk) -> String {
+    let mut text = format!(
+        "filepath: {}\nlanguage: {}\nnode_type: {}\nname: {}\nsignature: {}\n",
+        chunk.filepath,
+        chunk.language.as_str(),
+        chunk.node_type,
+        chunk.name,
+        chunk.signature
+    );
+
+    if let Some(parent_context) = chunk
+        .parent_context
+        .as_deref()
+        .map(str::trim)
+        .filter(|ctx| !ctx.is_empty())
+    {
+        text.push_str("parent_context:\n");
+        text.push_str(parent_context);
+        text.push('\n');
+    }
+
+    text.push_str("content:\n");
+    text.push_str(&chunk.content);
+    text
+}
 
 struct BatchInputs {
     input_ids: Vec<i64>,
@@ -261,6 +287,52 @@ fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Chunk, Language};
+
+    fn sample_chunk(parent_context: Option<String>) -> Chunk {
+        Chunk {
+            chunk_id: "chunk-a".to_string(),
+            codebase_id: "codebase-a".to_string(),
+            filepath: "src/auth.rs".to_string(),
+            language: Language::Rust,
+            node_type: "function".to_string(),
+            name: "verify_token".to_string(),
+            signature: "fn verify_token(token: &str) -> bool".to_string(),
+            content: "fn verify_token(token: &str) -> bool {\n    !token.is_empty()\n}".to_string(),
+            parent_context,
+            start_line: 10,
+            end_line: 12,
+        }
+    }
+
+    #[test]
+    fn chunk_embedding_text_includes_metadata_parent_context_and_content() {
+        let chunk = sample_chunk(Some("impl AuthService {".to_string()));
+
+        let text = chunk_embedding_text(&chunk);
+
+        assert!(text.contains("filepath: src/auth.rs"));
+        assert!(text.contains("language: rust"));
+        assert!(text.contains("node_type: function"));
+        assert!(text.contains("name: verify_token"));
+        assert!(text.contains("signature: fn verify_token(token: &str) -> bool"));
+        assert!(text.contains("parent_context:\nimpl AuthService {"));
+        assert!(text.contains("content:\nfn verify_token(token: &str) -> bool"));
+
+        let metadata_pos = text.find("filepath:").unwrap();
+        let content_pos = text.find("content:").unwrap();
+        assert!(metadata_pos < content_pos);
+    }
+
+    #[test]
+    fn chunk_embedding_text_omits_empty_parent_context() {
+        let chunk = sample_chunk(Some("   ".to_string()));
+
+        let text = chunk_embedding_text(&chunk);
+
+        assert!(!text.contains("parent_context:"));
+        assert!(text.contains("content:\nfn verify_token"));
+    }
 
     #[test]
     fn test_mean_pool() {

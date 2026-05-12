@@ -201,8 +201,12 @@ pub async fn execute(
             tracing::warn!("Failed to clean old chunks for {}: {e}", file.relative_path);
         }
 
-        let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-        match engine.embed_batch(&texts) {
+        let texts: Vec<String> = chunks
+            .iter()
+            .map(crate::embedding::chunk_embedding_text)
+            .collect();
+        let text_refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        match engine.embed_batch(&text_refs) {
             Ok(embeddings) => {
                 let mtime = discovery::get_file_mtime(&file.path).unwrap_or_default();
                 let mtimes = vec![mtime; chunks.len()];
