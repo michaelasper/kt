@@ -328,6 +328,46 @@ async fn test_read_file_chunks_returns_source_order_with_line_ranges() {
 }
 
 #[tokio::test]
+async fn test_read_shadow_file_chunks_returns_source_order_with_line_ranges() {
+    let storage = make_storage().await;
+    let suffix = fastrand::u64(..);
+    let codebase_id = format!("shadow-read-file-order-{suffix}");
+    let filepath = format!("tests/fixtures/shadow_read_file_out_of_order_{suffix}.rs");
+
+    let chunks = vec![
+        test_chunk_in_codebase(&codebase_id, &filepath, "third", 20, 24),
+        test_chunk_in_codebase(&codebase_id, &filepath, "first", 0, 4),
+        test_chunk_in_codebase(&codebase_id, &filepath, "second", 10, 14),
+    ];
+    let embeddings = vec![vec![0.0f32; 384]; chunks.len()];
+
+    storage
+        .store_shadow_chunks_batch(&chunks, &embeddings, 30)
+        .await
+        .unwrap();
+
+    let results = storage.read_shadow_file_chunks(&filepath).await.unwrap();
+    let names = results
+        .iter()
+        .map(|result| result.name.as_str())
+        .collect::<Vec<_>>();
+    let ranges = results
+        .iter()
+        .map(|result| (result.start_line, result.end_line))
+        .collect::<Vec<_>>();
+
+    assert_eq!(names, vec!["first", "second", "third"]);
+    assert_eq!(
+        ranges,
+        vec![
+            (Some(0), Some(4)),
+            (Some(10), Some(14)),
+            (Some(20), Some(24))
+        ]
+    );
+}
+
+#[tokio::test]
 async fn test_same_file_and_symbol_are_scoped_by_codebase() {
     let storage = make_storage().await;
     let suffix = fastrand::u64(..);
