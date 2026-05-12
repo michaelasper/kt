@@ -132,7 +132,7 @@ impl KtServer {
 
         let top_k = params.top_k.unwrap_or(3).min(10);
         let headers_only = params.headers_only.unwrap_or(false);
-        let language = params.language.as_deref().and_then(parse_language);
+        let language = params.language.as_deref().and_then(Language::parse);
 
         let embedding_guard = self.inner.embedding.read().await;
         let engine = embedding_guard
@@ -498,15 +498,6 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
     service.waiting().await?;
 
     Ok(())
-}
-
-fn parse_language(s: &str) -> Option<Language> {
-    match s.to_lowercase().as_str() {
-        "rust" | "rs" => Some(Language::Rust),
-        "go" | "golang" => Some(Language::Go),
-        "java" => Some(Language::Java),
-        _ => None,
-    }
 }
 
 async fn resolve_codebase_selector(

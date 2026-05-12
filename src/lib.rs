@@ -28,7 +28,21 @@ pub enum Language {
 }
 
 impl Language {
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if s.eq_ignore_ascii_case("rust") || s.eq_ignore_ascii_case("rs") {
+            Some(Self::Rust)
+        } else if s.eq_ignore_ascii_case("go") || s.eq_ignore_ascii_case("golang") {
+            Some(Self::Go)
+        } else if s.eq_ignore_ascii_case("java") {
+            Some(Self::Java)
+        } else {
+            None
+        }
+    }
+
     pub fn from_extension(ext: &str) -> Option<Self> {
+        let ext = ext.trim_start_matches('.');
         match ext {
             "rs" => Some(Self::Rust),
             "go" => Some(Self::Go),
@@ -43,6 +57,39 @@ impl Language {
             Self::Go => "go",
             Self::Java => "java",
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseLanguageError {
+    input: String,
+}
+
+impl ParseLanguageError {
+    pub fn input(&self) -> &str {
+        &self.input
+    }
+}
+
+impl std::fmt::Display for ParseLanguageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Unknown language '{}' (expected rust, go, or java)",
+            self.input
+        )
+    }
+}
+
+impl std::error::Error for ParseLanguageError {}
+
+impl std::str::FromStr for Language {
+    type Err = ParseLanguageError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or_else(|| ParseLanguageError {
+            input: s.to_string(),
+        })
     }
 }
 
@@ -103,7 +150,24 @@ pub struct SearchResult {
 
 #[cfg(test)]
 mod tests {
-    use super::Chunk;
+    use super::{Chunk, Language};
+
+    #[test]
+    fn language_parse_accepts_canonical_names_and_aliases() {
+        assert_eq!(Language::parse("rust"), Some(Language::Rust));
+        assert_eq!(Language::parse("rs"), Some(Language::Rust));
+        assert_eq!(Language::parse("GO"), Some(Language::Go));
+        assert_eq!(Language::parse("golang"), Some(Language::Go));
+        assert_eq!(Language::parse(" java "), Some(Language::Java));
+    }
+
+    #[test]
+    fn language_parse_rejects_unknown_names() {
+        let error = "python".parse::<Language>().unwrap_err();
+
+        assert_eq!(error.input(), "python");
+        assert!(error.to_string().contains("Unknown language"));
+    }
 
     #[test]
     fn generate_id_uniqueness() {

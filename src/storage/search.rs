@@ -66,12 +66,14 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
     let mut results = Vec::new();
     let mut i = 1;
     while i + 1 < arr.len() {
+        let doc_key =
+            parse_string_value(&arr[i]).unwrap_or_else(|| format!("<result {}>", (i - 1) / 2));
         let fields = &arr[i + 1];
 
         let mut chunk_id = String::new();
         let mut codebase_id = String::new();
         let mut filepath = String::new();
-        let mut language = Language::Rust;
+        let mut language: Option<Language> = None;
         let mut node_type = String::new();
         let mut name = String::new();
         let mut signature = String::new();
@@ -104,7 +106,11 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
                         }
                         "language" => {
                             if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
-                                language = parse_language(&val);
+                                language = Some(val.parse::<Language>().map_err(|err| {
+                                    anyhow::anyhow!(
+                                        "{err} in FT.SEARCH result for document {doc_key}"
+                                    )
+                                })?);
                             }
                         }
                         "node_type" => {
@@ -154,6 +160,11 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
         }
 
         if !filepath.is_empty() {
+            let language = language.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "FT.SEARCH result for document {doc_key} ({filepath}) is missing required language field"
+                )
+            })?;
             results.push(SearchResult {
                 chunk_id,
                 codebase_id,
@@ -208,18 +219,6 @@ pub(crate) fn extract_doc_keys(value: &redis::Value) -> Vec<String> {
     }
 
     keys
-}
-
-fn parse_language(s: &str) -> Language {
-    match s {
-        "go" => Language::Go,
-        "java" => Language::Java,
-        "rust" => Language::Rust,
-        other => {
-            warn!("Unknown language '{other}', defaulting to Rust");
-            Language::Rust
-        }
-    }
 }
 
 fn parse_string_value(value: &redis::Value) -> Option<String> {
@@ -628,6 +627,51 @@ mod tests {
     }
 
     #[test]
+    fn parse_search_results_returns_error_for_unknown_language() {
+        let value = Value::Array(vec![
+            Value::Int(1),
+            Value::BulkString(b"doc1".to_vec()),
+            Value::Array(vec![
+                Value::BulkString(b"chunk_id".to_vec()),
+                Value::BulkString(b"chunk1".to_vec()),
+                Value::BulkString(b"filepath".to_vec()),
+                Value::BulkString(b"src/main.py".to_vec()),
+                Value::BulkString(b"language".to_vec()),
+                Value::BulkString(b"python".to_vec()),
+            ]),
+        ]);
+
+        let result = parse_search_results(value);
+
+        assert!(result.is_err());
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("Unknown language"));
+        assert!(error.contains("python"));
+    }
+
+    #[test]
+    fn parse_search_results_returns_error_for_missing_language() {
+        let value = Value::Array(vec![
+            Value::Int(1),
+            Value::BulkString(b"doc1".to_vec()),
+            Value::Array(vec![
+                Value::BulkString(b"chunk_id".to_vec()),
+                Value::BulkString(b"chunk1".to_vec()),
+                Value::BulkString(b"filepath".to_vec()),
+                Value::BulkString(b"src/main.rs".to_vec()),
+            ]),
+        ]);
+
+        let result = parse_search_results(value);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("missing required language field"));
+    }
+
+    #[test]
     fn parse_search_results_parses_codebase_id() {
         let value = Value::Array(vec![
             Value::Int(1),
@@ -639,6 +683,8 @@ mod tests {
                 Value::BulkString(b"codebase-a".to_vec()),
                 Value::BulkString(b"filepath".to_vec()),
                 Value::BulkString(b"src/main.rs".to_vec()),
+                Value::BulkString(b"language".to_vec()),
+                Value::BulkString(b"rust".to_vec()),
             ]),
         ]);
 
@@ -684,6 +730,8 @@ mod tests {
                 Value::BulkString(b"chunk1".to_vec()),
                 Value::BulkString(b"filepath".to_vec()),
                 Value::BulkString(b"src/main.rs".to_vec()),
+                Value::BulkString(b"language".to_vec()),
+                Value::BulkString(b"rust".to_vec()),
                 Value::BulkString(b"start_line".to_vec()),
                 Value::BulkString(b"12".to_vec()),
                 Value::BulkString(b"end_line".to_vec()),
@@ -707,6 +755,8 @@ mod tests {
                 Value::BulkString(b"chunk1".to_vec()),
                 Value::BulkString(b"filepath".to_vec()),
                 Value::BulkString(b"src/main.rs".to_vec()),
+                Value::BulkString(b"language".to_vec()),
+                Value::BulkString(b"rust".to_vec()),
                 Value::BulkString(b"start_line".to_vec()),
                 Value::Int(12),
                 Value::BulkString(b"end_line".to_vec()),
