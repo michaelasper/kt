@@ -28,6 +28,9 @@ enum Commands {
         /// Force full re-index instead of partial sync
         #[arg(short, long)]
         full: bool,
+        /// Alias to use when referring to this codebase
+        #[arg(long = "name")]
+        name: Option<String>,
     },
     /// Upgrade kt to the latest version
     Upgrade {
@@ -80,8 +83,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::Serve => {
             kt::mcp::run_server(config).await?;
         }
-        Commands::Sync { directory, full } => {
-            run_sync(&config, &directory, full).await?;
+        Commands::Sync {
+            directory,
+            full,
+            name,
+        } => {
+            run_sync(&config, &directory, full, name.as_deref()).await?;
         }
         Commands::Upgrade { force, version } => {
             run_upgrade(force, version).await?;
@@ -116,6 +123,7 @@ async fn run_sync(
     config: &kt::config::Config,
     directory: &std::path::Path,
     full: bool,
+    codebase_alias: Option<&str>,
 ) -> anyhow::Result<()> {
     let is_tty = std::io::stdout().is_terminal();
 
@@ -142,10 +150,11 @@ async fn run_sync(
 
     let storage = kt::storage::Storage::new(config)?;
     storage.ensure_index().await?;
+    let codebase = storage.register_codebase(directory, codebase_alias).await?;
 
     let engine = kt::embedding::EmbeddingEngine::new(config).await?;
 
-    let plan = kt::sync::plan(directory, &storage, full).await?;
+    let plan = kt::sync::plan(directory, &storage, &codebase, full).await?;
 
     if plan.files.is_empty() {
         tracing::info!("No supported files found to sync");
@@ -156,8 +165,8 @@ async fn run_sync(
         ui: kt::sync_ui::SyncUI::new(plan.files.len()),
     };
 
-    let stats = kt::sync::execute(&plan, &storage, &engine, &mut progress).await?;
-    kt::sync::finalize(directory, &plan.strategy, &storage).await?;
+    let stats = kt::sync::execute(&plan, &codebase, &storage, &engine, &mut progress).await?;
+    kt::sync::finalize(directory, &codebase, &plan.strategy, &storage).await?;
 
     progress.finish(stats.total_files, stats.total_chunks);
 

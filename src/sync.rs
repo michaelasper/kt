@@ -1,6 +1,7 @@
 use crate::discovery::{self, DiscoveredFile};
 use crate::git;
 use crate::storage::Storage;
+use crate::Codebase;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -41,7 +42,12 @@ impl SyncProgress for NoopProgress {
     fn finish(self, _files: usize, _chunks: usize) {}
 }
 
-pub async fn plan(root: &Path, storage: &Storage, full: bool) -> anyhow::Result<SyncPlan> {
+pub async fn plan(
+    root: &Path,
+    storage: &Storage,
+    codebase: &Codebase,
+    full: bool,
+) -> anyhow::Result<SyncPlan> {
     if full {
         tracing::info!("Full sync requested (--full flag)");
         return Ok(SyncPlan {
@@ -67,10 +73,9 @@ pub async fn plan(root: &Path, storage: &Storage, full: bool) -> anyhow::Result<
             }
         };
 
-        let dir_str = root
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid UTF-8 in directory path"))?;
-        let last_commit = storage.get_last_synced_commit(dir_str).await?;
+        let last_commit = storage
+            .get_last_synced_commit(&codebase.codebase_id)
+            .await?;
 
         match last_commit {
             None => {
@@ -146,7 +151,7 @@ pub async fn plan(root: &Path, storage: &Storage, full: bool) -> anyhow::Result<
     } else {
         tracing::info!("Not a git repository, using mtime-based partial sync");
 
-        let known_mtimes = storage.get_file_mtimes().await?;
+        let known_mtimes = storage.get_file_mtimes(Some(&codebase.codebase_id)).await?;
         Ok(SyncPlan {
             files: discovery::discover_modified_files(root, &known_mtimes),
             strategy: SyncStrategy::PartialMtime,
@@ -157,13 +162,17 @@ pub async fn plan(root: &Path, storage: &Storage, full: bool) -> anyhow::Result<
 
 pub async fn execute(
     plan: &SyncPlan,
+    codebase: &Codebase,
     storage: &Storage,
     engine: &crate::embedding::EmbeddingEngine,
     progress: &mut dyn SyncProgress,
 ) -> anyhow::Result<SyncStats> {
     for path in &plan.deleted_paths {
         tracing::info!("Removing deleted file from index: {}", path);
-        if let Err(e) = storage.remove_file_chunks(path).await {
+        if let Err(e) = storage
+            .remove_file_chunks_scoped(&codebase.codebase_id, path)
+            .await
+        {
             tracing::warn!("Failed to remove chunks for deleted file {}: {e}", path);
         }
     }
@@ -173,14 +182,22 @@ pub async fn execute(
     let mut errors = 0usize;
 
     for (i, file) in plan.files.iter().enumerate() {
-        let chunks = crate::indexing::parse_file(&file.path, &file.relative_path, file.language);
+        let chunks = crate::indexing::parse_file(
+            &file.path,
+            &file.relative_path,
+            file.language,
+            &codebase.codebase_id,
+        );
         if chunks.is_empty() {
             continue;
         }
 
         progress.start_file(&file.relative_path, i);
 
-        if let Err(e) = storage.remove_file_chunks(&file.relative_path).await {
+        if let Err(e) = storage
+            .remove_file_chunks_scoped(&codebase.codebase_id, &file.relative_path)
+            .await
+        {
             tracing::warn!("Failed to clean old chunks for {}: {e}", file.relative_path);
         }
 
@@ -219,36 +236,41 @@ pub async fn execute(
 
 pub async fn finalize(
     root: &Path,
+    codebase: &Codebase,
     strategy: &SyncStrategy,
     storage: &Storage,
 ) -> anyhow::Result<()> {
-    let dir_str = root
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid UTF-8 in directory path"))?;
-
     match strategy {
         SyncStrategy::Full => {
-            storage.clear_sync_state(dir_str).await?;
-            tracing::debug!("Cleared sync state after full sync");
-            if let Ok(git_info) = git::get_git_info(root) {
-                if let Some(commit) = git_info.commit_sha {
-                    storage.set_last_synced_commit(dir_str, &commit).await?;
-                    tracing::debug!(
-                        "Saved last synced commit after full sync to {}",
-                        &commit[..8]
-                    );
-                }
+            let commit = git::get_git_info(root)
+                .ok()
+                .and_then(|info| info.commit_sha);
+            storage
+                .mark_codebase_indexed(&codebase.codebase_id, commit.as_deref())
+                .await?;
+            if let Some(commit) = commit {
+                tracing::debug!(
+                    "Saved last synced commit after full sync to {}",
+                    &commit[..8]
+                );
             }
         }
         SyncStrategy::PartialGit { .. } => {
-            if let Ok(git_info) = git::get_git_info(root) {
-                if let Some(commit) = git_info.commit_sha {
-                    storage.set_last_synced_commit(dir_str, &commit).await?;
-                    tracing::debug!("Updated last synced commit to {}", &commit[..8]);
-                }
+            let commit = git::get_git_info(root)
+                .ok()
+                .and_then(|info| info.commit_sha);
+            storage
+                .mark_codebase_indexed(&codebase.codebase_id, commit.as_deref())
+                .await?;
+            if let Some(commit) = commit {
+                tracing::debug!("Updated last synced commit to {}", &commit[..8]);
             }
         }
-        SyncStrategy::PartialMtime => {}
+        SyncStrategy::PartialMtime => {
+            storage
+                .mark_codebase_indexed(&codebase.codebase_id, None)
+                .await?;
+        }
     }
 
     Ok(())

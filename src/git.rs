@@ -213,6 +213,26 @@ pub fn get_diff_files(directory: &Path, base_ref: &str) -> Result<Vec<String>, G
     let diff =
         repo.diff_tree_to_tree(Some(&base_commit.tree()?), Some(&head_commit.tree()?), None)?;
 
+    collect_diff_paths(&diff)
+}
+
+pub fn get_worktree_diff_files(directory: &Path, base_ref: &str) -> Result<Vec<String>, GitError> {
+    let repo = Repository::discover(directory)
+        .map_err(|_| GitError::NotARepository(directory.display().to_string()))?;
+
+    let base_commit = resolve_base_commit(&repo, base_ref)?;
+
+    let mut diff_options = git2::DiffOptions::new();
+    diff_options.include_untracked(true);
+    diff_options.recurse_untracked_dirs(true);
+
+    let diff =
+        repo.diff_tree_to_workdir_with_index(Some(&base_commit.tree()?), Some(&mut diff_options))?;
+
+    collect_diff_paths(&diff)
+}
+
+fn collect_diff_paths(diff: &git2::Diff<'_>) -> Result<Vec<String>, GitError> {
     let mut changed_files = Vec::new();
     diff.foreach(
         &mut |delta, _progress| {
@@ -359,6 +379,55 @@ mod tests {
 
             let changed = get_diff_files(repo_path, "main").unwrap();
             assert_eq!(changed, vec!["feature.rs".to_string()]);
+        });
+    }
+
+    #[test]
+    fn test_get_worktree_diff_files_includes_uncommitted_worktree_changes() {
+        with_temp_repo(|repo| {
+            let repo_path = repo.workdir().unwrap();
+            commit_file(repo, "base.rs", "pub fn base() {}\n", "base");
+
+            let base_commit = repo.head().unwrap().peel_to_commit().unwrap();
+            if repo.find_branch("main", BranchType::Local).is_err() {
+                repo.branch("main", &base_commit, false).unwrap();
+            }
+            switch_to_feature_branch(repo, &base_commit);
+
+            write(repo_path.join("base.rs"), "pub fn changed() {}\n").unwrap();
+            write(repo_path.join("untracked.rs"), "pub fn untracked() {}\n").unwrap();
+
+            let mut changed = get_worktree_diff_files(repo_path, "main").unwrap();
+            changed.sort();
+
+            assert_eq!(
+                changed,
+                vec!["base.rs".to_string(), "untracked.rs".to_string()]
+            );
+        });
+    }
+
+    #[test]
+    fn test_get_diff_files_ignores_uncommitted_worktree_changes() {
+        with_temp_repo(|repo| {
+            let repo_path = repo.workdir().unwrap();
+            commit_file(repo, "base.rs", "pub fn base() {}\n", "base");
+
+            let base_commit = repo.head().unwrap().peel_to_commit().unwrap();
+            if repo.find_branch("main", BranchType::Local).is_err() {
+                repo.branch("main", &base_commit, false).unwrap();
+            }
+            switch_to_feature_branch(repo, &base_commit);
+
+            write(repo_path.join("base.rs"), "pub fn changed() {}\n").unwrap();
+            write(repo_path.join("untracked.rs"), "pub fn untracked() {}\n").unwrap();
+
+            let changed = get_diff_files(repo_path, "main").unwrap();
+
+            assert!(
+                changed.is_empty(),
+                "committed-tree sync diff must not include dirty worktree files"
+            );
         });
     }
 

@@ -3,12 +3,14 @@ use redis::cmd;
 use tracing::{debug, info};
 
 use super::index::{INDEX_NAME, KEY_PREFIX, SHADOW_KEY_PREFIX};
-use super::search::{escape_exact_match, extract_doc_keys};
+use super::search::extract_doc_keys;
 
 macro_rules! append_hset_fields {
     ($cmd:expr, $chunk:expr, $embedding_bytes:expr, $mtime:expr) => {{
         $cmd.arg("chunk_id")
             .arg(&$chunk.chunk_id)
+            .arg("codebase_id")
+            .arg(&$chunk.codebase_id)
             .arg("filepath")
             .arg(&$chunk.filepath)
             .arg("language")
@@ -42,7 +44,7 @@ pub(super) async fn store_chunk_impl(
     embedding: &[f32],
     mtime: Option<&str>,
 ) -> anyhow::Result<()> {
-    let key = format!("{KEY_PREFIX}{}", chunk.chunk_id);
+    let key = format!("{KEY_PREFIX}{}:{}", chunk.codebase_id, chunk.chunk_id);
     let embedding_bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
 
     debug!("Storing chunk {} at key {}", chunk.name, key);
@@ -63,7 +65,7 @@ pub(super) async fn store_chunks_batch_impl(
     let mut pipe = redis::pipe();
 
     for (i, (chunk, embedding)) in chunks.iter().zip(embeddings.iter()).enumerate() {
-        let key = format!("{KEY_PREFIX}{}", chunk.chunk_id);
+        let key = format!("{KEY_PREFIX}{}:{}", chunk.codebase_id, chunk.chunk_id);
         let embedding_bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
 
         let pipe_cmd = pipe.cmd("HSET");
@@ -89,9 +91,10 @@ pub(super) async fn store_chunks_batch_impl(
 
 pub(super) async fn remove_file_chunks_impl(
     conn: &mut redis::aio::MultiplexedConnection,
+    codebase_id: Option<&str>,
     filepath: &str,
 ) -> anyhow::Result<usize> {
-    let query_str = format!("@filepath:\"{}\"", escape_exact_match(filepath));
+    let query_str = super::search::build_file_query(filepath, codebase_id);
     debug!("Removing chunks for file: {}", query_str);
 
     let result: redis::Value = cmd("FT.SEARCH")
@@ -132,7 +135,10 @@ pub(super) async fn store_shadow_chunks_batch_impl(
     let mut pipe = redis::pipe();
 
     for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
-        let key = format!("{SHADOW_KEY_PREFIX}{}", chunk.chunk_id);
+        let key = format!(
+            "{SHADOW_KEY_PREFIX}{}:{}",
+            chunk.codebase_id, chunk.chunk_id
+        );
         let embedding_bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
 
         let pipe_cmd = pipe.cmd("HSET");
