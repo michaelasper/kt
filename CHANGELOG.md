@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.5.6 (2026-05-12)</small>
+
+* fix(storage): reject invalid language metadata ([dd6a0be](https://github.com/michaelasper/kt/commit/dd6a0be))
+
 ## <small>0.5.5 (2026-05-12)</small>
 
 * fix: force a release release ([91eca03](https://github.com/michaelasper/kt/commit/91eca03))
