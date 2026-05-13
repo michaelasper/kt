@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.7.1 (2026-05-13)</small>
+
+* fix: standardize MCP error signaling ([3cb0091](https://github.com/michaelasper/kt/commit/3cb0091))
+
 ## 0.7.0 (2026-05-13)
 
 * feat: add privacy-conscious diagnostics and metrics system ([8714745](https://github.com/michaelasper/kt/commit/8714745))
