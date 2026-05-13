@@ -289,6 +289,11 @@ pub async fn execute(
                     Err(_) => return,
                 };
 
+                {
+                    let mut p = progress.lock().await;
+                    p.start_file(&file.relative_path, i);
+                }
+
                 let parse_start = std::time::Instant::now();
                 let chunks = crate::indexing::parse_file_async(
                     file.path.clone(),
@@ -299,6 +304,8 @@ pub async fn execute(
                 .await;
 
                 if chunks.is_empty() {
+                    let mut p = progress.lock().await;
+                    p.finish_file(&file.relative_path, 0);
                     return;
                 }
 
@@ -309,11 +316,6 @@ pub async fn execute(
                         duration_ms: parse_start.elapsed().as_millis(),
                     })
                     .await;
-
-                {
-                    let mut p = progress.lock().await;
-                    p.start_file(&file.relative_path, i);
-                }
 
                 if let Err(e) = storage
                     .remove_file_chunks_scoped(&codebase_id, &file.relative_path)

@@ -57,6 +57,9 @@ pub struct PrettySyncUI {
     chunks_bar: ProgressBar,
     total_files: usize,
     total_chunks: usize,
+    files_started: usize,
+    active_files: usize,
+    shred_tick: usize,
     tx: mpsc::Sender<()>,
     rain_handle: Option<std::thread::JoinHandle<()>>,
 }
@@ -93,11 +96,12 @@ impl PrettySyncUI {
 
         let chunks_bar = multi.add(ProgressBar::new(0));
         let chunks_style =
-            ProgressStyle::with_template("  [{prefix:.cyan}] {wide_bar:.green/dim} ({pos}/{len})")
+            ProgressStyle::with_template("  [{prefix:.cyan}] {spinner} {msg}")
                 .expect("Failed to parse chunks progress bar template")
                 .progress_chars("▓▓░");
         chunks_bar.set_style(chunks_style);
         chunks_bar.set_prefix(" CHUNKS ");
+        chunks_bar.set_message(" waiting for work...");
 
         let (tx, rx) = mpsc::channel();
         let rain_bars_clone = rain_bars.clone();
@@ -113,24 +117,39 @@ impl PrettySyncUI {
             chunks_bar,
             total_files,
             total_chunks: 0,
+            files_started: 0,
+            active_files: 0,
+            shred_tick: 0,
             tx,
             rain_handle: handle,
         }
     }
 
-    fn start_file(&mut self, path: &str, file_index: usize) {
-        self.target_bar.set_message(path.to_string());
-        self.chunks_bar.set_length(0);
-        self.chunks_bar.set_position(0);
+    fn start_file(&mut self, _path: &str, _file_index: usize) {
         self.target_bar
-            .set_prefix(format!(" TARGET {}/{}", file_index + 1, self.total_files));
+            .set_prefix(format!(" ACTIVE {}/{}", self.active_files + 1, self.total_files));
+        self.active_files += 1;
+        self.files_started += 1;
+        let shred = self.shred_message();
+        self.target_bar.set_message(shred);
+        self.chunks_bar
+            .set_message(self.status_line("shredding"));
         self.target_bar.tick();
+        self.chunks_bar.tick();
     }
 
     fn finish_file(&mut self, _path: &str, chunks: usize) {
         self.total_chunks += chunks;
-        self.chunks_bar.set_length(chunks as u64);
-        self.chunks_bar.set_position(chunks as u64);
+        self.active_files = self.active_files.saturating_sub(1);
+        let _ = _path;
+        let shred = self.shred_message();
+        self.target_bar.set_message(shred);
+        self.chunks_bar
+            .set_message(self.status_line("processed"));
+        self.target_bar
+            .set_prefix(format!(" ACTIVE {}/{}", self.active_files, self.total_files));
+        self.chunks_bar.tick();
+        self.target_bar.tick();
     }
 
     fn finish(&mut self, total_files: usize, total_chunks: usize) {
@@ -145,14 +164,40 @@ impl PrettySyncUI {
         let top = format_box_top(width);
         let bot = format_box_bot(width);
         let line1 = format_box_line(&format!("  {} SYNC COMPLETE", style("✓").green()), width);
-        let detail = format!(
-            "    {} files shredded into {} chunks",
-            total_files, total_chunks
-        );
+        let detail = format_sync_summary(total_files, total_chunks);
         let line2 = format_box_line(&detail, width);
 
         println!("\n{top}\n{line1}\n{line2}\n{bot}\n");
     }
+
+    fn status_line(&self, state: &str) -> String {
+        format!(
+            "{} {} | {} | {}",
+            state,
+            style(format!("{} chunks", self.total_chunks)).green(),
+            style(format!("{} active files", self.active_files)).cyan(),
+            style(format!("{} files seen", self.files_started)).blue(),
+        )
+    }
+
+    fn shred_message(&mut self) -> String {
+        let dots = match self.shred_tick % 3 {
+            0 => ".",
+            1 => "..",
+            2 => "...",
+            _ => ".",
+        };
+        self.shred_tick += 1;
+        format!(
+            "{}{}",
+            style("shredding").yellow(),
+            style(dots).green()
+        )
+    }
+}
+
+fn format_sync_summary(total_files: usize, total_chunks: usize) -> String {
+    format!("    {} files shredded into {} chunks", total_files, total_chunks)
 }
 
 fn rain_loop(rx: mpsc::Receiver<()>, bars: Vec<ProgressBar>) {
@@ -215,4 +260,32 @@ fn format_box_line(content: &str, width: usize) -> String {
         " ".repeat(padding),
         style(" |").cyan()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pretty_ui_start_and_finish_file_track_aggregate_progress() {
+        let mut ui = PrettySyncUI::new(3);
+        ui.start_file("alpha.rs", 0);
+        ui.start_file("beta.rs", 1);
+        ui.finish_file("alpha.rs", 10);
+
+        assert_eq!(ui.files_started, 2);
+        assert_eq!(ui.active_files, 1);
+        assert_eq!(ui.total_chunks, 10);
+
+        ui.start_file("gamma.rs", 2);
+        ui.finish_file("beta.rs", 7);
+        ui.finish_file("gamma.rs", 5);
+
+        assert_eq!(ui.files_started, 3);
+        assert_eq!(ui.active_files, 0);
+        assert_eq!(ui.total_chunks, 22);
+
+        assert_eq!(format_sync_summary(3, 22), "    3 files shredded into 22 chunks");
+        ui.finish(3, 22);
+    }
 }
