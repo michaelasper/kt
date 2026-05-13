@@ -195,7 +195,7 @@ impl KtServer {
             .as_ref()
             .ok_or_else(|| mcp_error("Embedding engine not available"))?;
 
-        let query_embedding = engine.embed(&params.query).map_err(mcp_error)?;
+        let query_embedding = engine.embed(&params.query).await.map_err(mcp_error)?;
 
         let storage = self.inner.storage.read().await;
         let codebase = resolve_codebase_selector(
@@ -564,15 +564,11 @@ impl KtServer {
                 .iter()
                 .map(crate::embedding::chunk_embedding_text)
                 .collect();
-            let engine_clone = engine.clone();
-            let embeddings_result = tokio::task::spawn_blocking(move || {
-                let text_refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-                engine_clone.embed_batch(&text_refs)
-            })
-            .await;
+            let text_refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+            let embeddings_result = engine.embed_batch(&text_refs).await;
 
             match embeddings_result {
-                Ok(Ok(embeddings)) => {
+                Ok(embeddings) => {
                     if let Err(e) = storage
                         .store_shadow_chunks_batch(&chunks, &embeddings, ttl_seconds)
                         .await
@@ -583,11 +579,8 @@ impl KtServer {
                     total_chunks += chunks.len();
                     total_files += 1;
                 }
-                Ok(Err(e)) => {
-                    warn!("Failed to embed chunks for {}: {e}", filepath);
-                }
                 Err(e) => {
-                    warn!("Task join error during embedding: {e}");
+                    warn!("Failed to embed chunks for {}: {e}", filepath);
                 }
             }
         }

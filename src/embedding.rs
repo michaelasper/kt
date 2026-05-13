@@ -104,10 +104,10 @@ fn tokenize_and_pad(tokenizer: &Tokenizer, texts: &[&str]) -> anyhow::Result<Bat
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EmbeddingEngine {
-    session: std::sync::Mutex<ort::session::Session>,
-    tokenizer: Tokenizer,
+    session: std::sync::Arc<std::sync::Mutex<ort::session::Session>>,
+    tokenizer: std::sync::Arc<Tokenizer>,
 }
 
 impl EmbeddingEngine {
@@ -138,19 +138,19 @@ impl EmbeddingEngine {
 
         info!("Embedding engine initialized (dim={EMBEDDING_DIM})");
         Ok(Self {
-            session: std::sync::Mutex::new(session),
-            tokenizer,
+            session: std::sync::Arc::new(std::sync::Mutex::new(session)),
+            tokenizer: std::sync::Arc::new(tokenizer),
         })
     }
 
-    pub fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
-        let mut result = self.embed_batch(&[text])?;
+    pub async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        let mut result = self.embed_batch(&[text]).await?;
         result
             .pop()
             .ok_or_else(|| anyhow::anyhow!("No embedding produced"))
     }
 
-    pub fn embed_batch(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+    pub async fn embed_batch(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
@@ -158,47 +158,65 @@ impl EmbeddingEngine {
         let mut all_embeddings = Vec::with_capacity(texts.len());
 
         for sub_batch in texts.chunks(BATCH_SIZE) {
-            let inputs = tokenize_and_pad(&self.tokenizer, sub_batch)?;
+            let session_clone = self.session.clone();
+            let tokenizer_clone = self.tokenizer.clone();
+            let owned_sub_batch: Vec<String> = sub_batch.iter().map(|s| s.to_string()).collect();
 
-            debug!(
-                "Batched embedding: {} texts, max_seq_len={}",
-                inputs.batch_size, inputs.max_seq_len
-            );
+            let batch_embeddings =
+                tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Vec<f32>>> {
+                    let text_refs: Vec<&str> = owned_sub_batch.iter().map(|s| s.as_str()).collect();
+                    let inputs = tokenize_and_pad(&tokenizer_clone, &text_refs)?;
 
-            let shape = [inputs.batch_size, inputs.max_seq_len];
-            let attention_mask = inputs.attention_mask.clone();
-            let mut session = self
-                .session
-                .lock()
-                .map_err(|_| anyhow::anyhow!("session lock poisoned"))?;
+                    debug!(
+                        "Batched embedding: {} texts, max_seq_len={}",
+                        inputs.batch_size, inputs.max_seq_len
+                    );
 
-            let outputs = session.run(ort::inputs! {
-                "input_ids" => Tensor::from_array((shape, inputs.input_ids))?,
-                "attention_mask" => Tensor::from_array((shape, inputs.attention_mask))?,
-                "token_type_ids" => Tensor::from_array((shape, inputs.token_type_ids))?,
-            })?;
+                    let shape = [inputs.batch_size, inputs.max_seq_len];
+                    let attention_mask = inputs.attention_mask;
+                    let input_ids = inputs.input_ids;
+                    let token_type_ids = inputs.token_type_ids;
+                    let batch_size = inputs.batch_size;
+                    let max_seq_len = inputs.max_seq_len;
+                    let seq_lens = inputs.seq_lens;
 
-            let first_output = outputs
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("No output from model"))?;
-            let output_tensor: Tensor<f32> = first_output
-                .1
-                .downcast()
-                .map_err(|e| anyhow::anyhow!("Output downcast error: {e}"))?;
-            let (_shape, data) = output_tensor.extract_tensor();
+                    let mut session = session_clone
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("session lock poisoned"))?;
 
-            for i in 0..inputs.batch_size {
-                let seq_len = inputs.seq_lens[i];
-                let offset = i * inputs.max_seq_len * EMBEDDING_DIM;
-                let sample_data = &data[offset..offset + seq_len * EMBEDDING_DIM];
-                let sample_mask =
-                    &attention_mask[i * inputs.max_seq_len..i * inputs.max_seq_len + seq_len];
+                    let outputs = session.run(ort::inputs! {
+                        "input_ids" => Tensor::from_array((shape, input_ids))?,
+                        "attention_mask" => Tensor::from_array((shape, attention_mask.clone()))?,
+                        "token_type_ids" => Tensor::from_array((shape, token_type_ids))?,
+                    })?;
+                    let first_output = outputs
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("No output from model"))?;
+                    let output_tensor: Tensor<f32> = first_output
+                        .1
+                        .downcast()
+                        .map_err(|e| anyhow::anyhow!("Output downcast error: {e}"))?;
+                    let (_shape, data_view) = output_tensor.extract_tensor();
 
-                let pooled = mean_pool(sample_data, sample_mask, seq_len, EMBEDDING_DIM);
-                let normalized = normalize(pooled);
-                all_embeddings.push(normalized);
-            }
+                    let mut embeddings = Vec::with_capacity(batch_size);
+                    for i in 0..batch_size {
+                        let seq_len = seq_lens[i];
+                        let offset = i * max_seq_len * EMBEDDING_DIM;
+                        let sample_data = &data_view[offset..offset + seq_len * EMBEDDING_DIM];
+                        let sample_mask =
+                            &attention_mask[i * max_seq_len..i * max_seq_len + seq_len];
+
+                        let pooled = mean_pool(sample_data, sample_mask, seq_len, EMBEDDING_DIM);
+                        let normalized = normalize(pooled);
+                        embeddings.push(normalized);
+                    }
+
+                    Ok(embeddings)
+                })
+                .await??;
+
+            all_embeddings.extend(batch_embeddings);
         }
 
         Ok(all_embeddings)

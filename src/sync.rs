@@ -327,19 +327,22 @@ pub async fn execute(
                     .map(crate::embedding::chunk_embedding_text)
                     .collect();
 
-                let engine_clone = engine.clone();
                 let file_path = file.path.clone();
                 let embed_start = std::time::Instant::now();
-                let result = tokio::task::spawn_blocking(move || {
-                    let text_refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-                    let embeddings = engine_clone.embed_batch(&text_refs)?;
-                    let mtime = discovery::get_file_mtime(&file_path).unwrap_or_default();
-                    Ok::<(Vec<Vec<f32>>, String), anyhow::Error>((embeddings, mtime))
-                })
-                .await;
+
+                let text_refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+                let embeddings_result = engine.embed_batch(&text_refs).await;
+
+                let result = match embeddings_result {
+                    Ok(embeddings) => {
+                        let mtime = discovery::get_file_mtime(&file_path).unwrap_or_default();
+                        Ok((embeddings, mtime))
+                    }
+                    Err(e) => Err(e),
+                };
 
                 match result {
-                    Ok(Ok((embeddings, mtime))) => {
+                    Ok((embeddings, mtime)) => {
                         diagnostics
                             .emit(DiagnosticEvent::EmbeddingBatch {
                                 size: chunks.len(),
@@ -363,12 +366,8 @@ pub async fn execute(
                             total_files.fetch_add(1, Ordering::SeqCst);
                         }
                     }
-                    Ok(Err(e)) => {
-                        tracing::warn!("Failed to process chunks for {}: {e}", file.relative_path);
-                        errors.fetch_add(1, Ordering::SeqCst);
-                    }
                     Err(e) => {
-                        tracing::warn!("Task join error during processing: {e}");
+                        tracing::warn!("Failed to process chunks for {}: {e}", file.relative_path);
                         errors.fetch_add(1, Ordering::SeqCst);
                     }
                 }

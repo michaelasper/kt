@@ -63,7 +63,7 @@ pub fn calculate_invoice_total(line_items: &[u64]) -> u64 {
     sync::finalize(temp.path(), &codebase, &strategy, &storage).await?;
 
     let query = "how does auth work";
-    let query_embedding = engine.embed(query)?;
+    let query_embedding = engine.embed(query).await?;
     let results = storage
         .hybrid_search_scoped(
             &query_embedding,

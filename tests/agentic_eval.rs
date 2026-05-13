@@ -78,7 +78,7 @@ async fn run_fixture_eval(fixture: EvalFixture) -> anyhow::Result<Vec<EvalResult
 
     let mut results = Vec::new();
     for eval_query in fixture.queries {
-        let query_embedding = engine.embed(&eval_query.query)?;
+        let query_embedding = engine.embed(&eval_query.query).await?;
         let search_results = storage
             .hybrid_search_scoped(
                 &query_embedding,
