@@ -319,15 +319,14 @@ impl KtServer {
         results.extend(shadow_results);
 
         if results.is_empty() {
-            let xml = if warnings.is_empty() {
-                format!(
-                    "<error>No chunks found for file: {}</error>",
-                    xml_escape(&params.filepath)
-                )
-            } else {
-                format_file_not_found(&params.filepath, &warnings)
-            };
-            return Ok(CallToolResult::success(vec![Content::text(xml)]));
+            let mut err_msg = format!("No chunks found for file: {}", params.filepath);
+            if !warnings.is_empty() {
+                err_msg.push_str("\nWarnings:");
+                for w in &warnings {
+                    err_msg.push_str(&format!("\n- [{}] {}", w.source, w.message));
+                }
+            }
+            return Err(mcp_error(err_msg));
         }
 
         let results = deduplicate_results(results);
@@ -351,10 +350,10 @@ impl KtServer {
 
         let root = std::path::Path::new(&params.directory_path);
         if !root.exists() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "<error>Directory not found: {}</error>",
+            return Err(mcp_error(format!(
+                "Directory not found: {}",
                 params.directory_path
-            ))]));
+            )));
         }
 
         let full = params.full.unwrap_or(false);
@@ -486,10 +485,10 @@ impl KtServer {
 
         let root = std::path::Path::new(&params.directory_path);
         if !root.exists() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "<error>Directory not found: {}</error>",
+            return Err(mcp_error(format!(
+                "Directory not found: {}",
                 params.directory_path
-            ))]));
+            )));
         }
 
         let storage = self.inner.storage.read().await;
@@ -1009,17 +1008,6 @@ fn format_file_results(
     xml
 }
 
-fn format_file_not_found(filepath: &str, warnings: &[ToolWarning]) -> String {
-    let mut xml = format!("<files filepath=\"{}\">\n", xml_escape(filepath));
-    append_warnings_xml(&mut xml, warnings);
-    xml.push_str(&format!(
-        "  <error>No chunks found for file: {}</error>\n",
-        xml_escape(filepath)
-    ));
-    xml.push_str("</files>");
-    xml
-}
-
 fn append_warnings_xml(xml: &mut String, warnings: &[ToolWarning]) {
     if warnings.is_empty() {
         return;
@@ -1182,19 +1170,5 @@ mod tests {
         assert!(xml.contains(
             "<warning source=\"shadow_index\">Shadow file read failed: redis &lt;down&gt; &amp; retry</warning>"
         ));
-    }
-
-    #[test]
-    fn test_format_file_not_found_preserves_shadow_warnings() {
-        let warnings = vec![ToolWarning::shadow_index(
-            "Shadow file read failed: redis down",
-        )];
-
-        let xml = format_file_not_found("src/example.rs", &warnings);
-
-        assert!(xml.contains(
-            "<warning source=\"shadow_index\">Shadow file read failed: redis down</warning>"
-        ));
-        assert!(xml.contains("<error>No chunks found for file: src/example.rs</error>"));
     }
 }
