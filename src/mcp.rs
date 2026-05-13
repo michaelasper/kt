@@ -411,14 +411,31 @@ impl KtServer {
             .map_err(mcp_error)?;
 
         let msg = format!(
-            "<result codebase_id=\"{}\" codebase_alias=\"{}\" root_path=\"{}\">Sync complete: {} files, {} chunks indexed, {} errors</result>",
+            "Sync complete: {} files, {} chunks indexed, {} errors",
+            stats.total_files, stats.total_chunks, stats.errors
+        );
+
+        if stats.errors > 0 {
+            warn!("{msg}");
+            return Err(rmcp::ErrorData::internal_error(
+                msg,
+                Some(serde_json::json!({
+                    "codebase_id": codebase.codebase_id,
+                    "codebase_alias": codebase.alias,
+                    "root_path": codebase.root_path,
+                })),
+            ));
+        }
+
+        let xml = format!(
+            "<result codebase_id=\"{}\" codebase_alias=\"{}\" root_path=\"{}\">{}</result>",
             xml_escape(&codebase.codebase_id),
             xml_escape(codebase.alias.as_deref().unwrap_or("")),
             xml_escape(&codebase.root_path),
-            stats.total_files, stats.total_chunks, stats.errors
+            xml_escape(&msg)
         );
-        info!("{msg}");
-        Ok(CallToolResult::success(vec![Content::text(msg)]))
+        info!("{xml}");
+        Ok(CallToolResult::success(vec![Content::text(xml)]))
     }
 
     #[tool(
@@ -659,8 +676,7 @@ impl KtServer {
         self.ensure_ready().await.map_err(mcp_error)?;
 
         // Stub implementation
-        let xml = "<query_result status=\"failure\">\n  <answer>The Agentic RAG layer is not yet implemented. This tool currently serves as a public contract for future development.</answer>\n</query_result>";
-        Ok(CallToolResult::success(vec![Content::text(xml)]))
+        Err(mcp_error("The Agentic RAG layer is not yet implemented. This tool currently serves as a public contract for future development."))
     }
 }
 
