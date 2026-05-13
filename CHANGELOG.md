@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.7.2 (2026-05-13)</small>
+
+* perf: offload ONNX inference and tokenization to blocking tokio task ([7a128bd](https://github.com/michaelasper/kt/commit/7a128bd)), closes [#9](https://github.com/michaelasper/kt/issues/9)
+
 ## <small>0.7.1 (2026-05-13)</small>
 
 * fix: standardize MCP error signaling ([3cb0091](https://github.com/michaelasper/kt/commit/3cb0091))
