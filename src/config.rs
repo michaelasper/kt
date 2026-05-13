@@ -145,47 +145,47 @@ fn merge_exclude_patterns(global_config: Option<&GlobalConfig>) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::global_config::GlobalConfig;
-#[test]
-fn config_prefers_global_redis_settings_when_env_is_absent() {
-    let mut global = GlobalConfig::default();
-    global.redis.url = "redis://127.0.0.1:6380".to_string();
-    global.redis.timeout_seconds = 12;
+    #[test]
+    fn config_prefers_global_redis_settings_when_env_is_absent() {
+        let mut global = GlobalConfig::default();
+        global.redis.url = "redis://127.0.0.1:6380".to_string();
+        global.redis.timeout_seconds = 12;
 
-    let config = Config::from_sources(None, None, None, None, Some(&global)).unwrap();
+        let config = Config::from_sources(None, None, None, None, Some(&global)).unwrap();
 
-    assert_eq!(config.redis_url, "redis://127.0.0.1:6380");
-    assert_eq!(config.redis_timeout, Duration::from_secs(12));
-}
+        assert_eq!(config.redis_url, "redis://127.0.0.1:6380");
+        assert_eq!(config.redis_timeout, Duration::from_secs(12));
+    }
 
-#[test]
-fn config_env_redis_settings_override_global_config() {
-    let mut global = GlobalConfig::default();
-    global.redis.url = "redis://127.0.0.1:6380".to_string();
-    global.redis.timeout_seconds = 12;
+    #[test]
+    fn config_env_redis_settings_override_global_config() {
+        let mut global = GlobalConfig::default();
+        global.redis.url = "redis://127.0.0.1:6380".to_string();
+        global.redis.timeout_seconds = 12;
 
-    let config = Config::from_sources(
-        Some("redis://redis.example:6379".to_string()),
-        Some("30".to_string()),
-        None,
-        None,
-        Some(&global),
-    )
-    .unwrap();
+        let config = Config::from_sources(
+            Some("redis://redis.example:6379".to_string()),
+            Some("30".to_string()),
+            None,
+            None,
+            Some(&global),
+        )
+        .unwrap();
 
-    assert_eq!(config.redis_url, "redis://redis.example:6379");
-    assert_eq!(config.redis_timeout, Duration::from_secs(30));
-}
+        assert_eq!(config.redis_url, "redis://redis.example:6379");
+        assert_eq!(config.redis_timeout, Duration::from_secs(30));
+    }
 
-#[test]
-fn config_merges_default_and_global_indexing_exclude_patterns() {
-    let mut global = GlobalConfig::default();
-    global.indexing.exclude_patterns = vec!["generated".to_string(), "fixtures/**".to_string()];
+    #[test]
+    fn config_merges_default_and_global_indexing_exclude_patterns() {
+        let mut global = GlobalConfig::default();
+        global.indexing.exclude_patterns = vec!["generated".to_string(), "fixtures/**".to_string()];
 
-    let config = Config::from_sources(None, None, None, None, Some(&global)).unwrap();
+        let config = Config::from_sources(None, None, None, None, Some(&global)).unwrap();
 
-    assert!(config.exclude_patterns.contains(&"target".to_string()));
-    assert!(config.exclude_patterns.contains(&".git".to_string()));
-    assert!(config.exclude_patterns.contains(&"generated".to_string()));
-    assert!(config.exclude_patterns.contains(&"fixtures/**".to_string()));
+        assert!(config.exclude_patterns.contains(&"target".to_string()));
+        assert!(config.exclude_patterns.contains(&".git".to_string()));
+        assert!(config.exclude_patterns.contains(&"generated".to_string()));
+        assert!(config.exclude_patterns.contains(&"fixtures/**".to_string()));
     }
 }

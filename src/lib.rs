@@ -1,9 +1,11 @@
+pub mod agent;
 pub mod codebase;
 pub mod config;
 pub mod diagnostics;
 pub mod discovery;
 pub mod embedding;
 pub mod error;
+pub mod eval;
 pub mod git;
 pub mod global_config;
 pub mod indexing;
@@ -18,9 +20,10 @@ pub use codebase::Codebase;
 pub use config::Config;
 pub use error::KtError;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
     Rust,
@@ -129,6 +132,55 @@ impl Chunk {
         let result = hasher.finalize();
         hex::encode(result)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct QueryBudgets {
+    pub max_tokens: Option<usize>,
+    pub max_steps: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct QueryRequest {
+    pub query: String,
+    pub codebase_alias: Option<String>,
+    pub directory_path: Option<String>,
+    pub language: Option<Language>,
+    pub budgets: Option<QueryBudgets>,
+    pub stream: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum QueryStatus {
+    Success,
+    Partial,
+    Failure,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct QueryCitation {
+    pub filepath: String,
+    pub start_line: Option<usize>,
+    pub end_line: Option<usize>,
+    pub symbol: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct QueryTraceStep {
+    pub name: String,
+    pub query: Option<String>,
+    pub filepath: Option<String>,
+    pub results: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct QueryResponse {
+    pub status: QueryStatus,
+    pub answer: String,
+    pub evidence: Vec<QueryCitation>,
+    pub trace: Vec<QueryTraceStep>,
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]

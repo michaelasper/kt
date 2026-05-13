@@ -5,18 +5,13 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, warn};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DiagnosticsLevel {
+    #[default]
     Off,
     Local,
     Verbose,
-}
-
-impl Default for DiagnosticsLevel {
-    fn default() -> Self {
-        Self::Off
-    }
 }
 
 impl From<String> for DiagnosticsLevel {
@@ -111,7 +106,10 @@ impl Diagnostics {
 
         if let Some(ref path) = self.log_file {
             if let Err(e) = append_to_file(path, &line).await {
-                warn!("Failed to write diagnostic event to {}: {e}", path.display());
+                warn!(
+                    "Failed to write diagnostic event to {}: {e}",
+                    path.display()
+                );
             }
         }
 
@@ -121,7 +119,10 @@ impl Diagnostics {
     }
 
     pub async fn get_metrics(&self) -> anyhow::Result<MetricsSummary> {
-        let path = self.log_file.as_ref().ok_or_else(|| anyhow::anyhow!("Diagnostics are disabled"))?;
+        let path = self
+            .log_file
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Diagnostics are disabled"))?;
         if !path.exists() {
             return Ok(MetricsSummary::default());
         }

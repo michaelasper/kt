@@ -5,7 +5,7 @@ use crate::storage::Storage;
 use crate::Codebase;
 use futures::StreamExt;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
@@ -75,6 +75,7 @@ pub async fn plan_with_options(
 ) -> anyhow::Result<SyncPlan> {
     let start = std::time::Instant::now();
     let root_buf = root.to_path_buf();
+
     let plan = if full {
         tracing::info!("Full sync requested (--full flag)");
         SyncPlan {
@@ -95,119 +96,9 @@ pub async fn plan_with_options(
         };
 
         if is_git {
-            tracing::info!("Git repository detected, using git-aware partial sync");
-
-            let git_info = {
-                let root_buf = root_buf.clone();
-                tokio::task::spawn_blocking(move || git::get_git_info(&root_buf)).await??
-            };
-
-            let current_commit = match git_info.commit_sha {
-                Some(sha) => sha,
-                None => {
-                    tracing::warn!("No commit SHA found (detached HEAD?), falling back to full sync");
-                    let plan = SyncPlan {
-                        files: discovery::discover_files_with_options_async(
-                            root_buf.clone(),
-                            discovery_options.clone(),
-                        )
-                        .await,
-                        strategy: SyncStrategy::Full,
-                        deleted_paths: Vec::new(),
-                    };
-                    diagnostics
-                        .emit(DiagnosticEvent::SyncPlan {
-                            strategy: "full".to_string(),
-                            files_to_sync: plan.files.len(),
-                            deleted_paths: plan.deleted_paths.len(),
-                            duration_ms: start.elapsed().as_millis(),
-                        })
-                        .await;
-                    return Ok(plan);
-                }
-            };
-
-            let last_commit = storage
-                .get_last_synced_commit(&codebase.codebase_id)
-                .await?;
-
-            match last_commit {
-                None => {
-                    tracing::info!("No previous sync found, performing full sync");
-                    SyncPlan {
-                        files: discovery::discover_files_with_options_async(
-                            root_buf.clone(),
-                            discovery_options.clone(),
-                        )
-                        .await,
-                        strategy: SyncStrategy::Full,
-                        deleted_paths: Vec::new(),
-                    }
-                }
-                Some(last) if last == current_commit => {
-                    tracing::info!("Already up to date (commit: {})", current_commit);
-                    SyncPlan {
-                        files: vec![],
-                        strategy: SyncStrategy::PartialGit {
-                            prev_commit: last,
-                            current_commit,
-                        },
-                        deleted_paths: Vec::new(),
-                    }
-                }
-                Some(last) => {
-                    tracing::info!(
-                        "Changes detected ({} -> {}), performing partial sync",
-                        &last[..8],
-                        &current_commit[..8]
-                    );
-
-                    let changed_paths = {
-                        let root_buf = root_buf.clone();
-                        let last = last.clone();
-                        tokio::task::spawn_blocking(move || git::get_diff_files(&root_buf, &last))
-                            .await??
-                    };
-
-                    let mut deleted_paths = Vec::new();
-                    for path in &changed_paths {
-                        if !root.join(path).exists() {
-                            tracing::info!("Deleted file detected: {}", path);
-                            deleted_paths.push(path.clone());
-                        }
-                    }
-
-                    let changed_set: HashSet<_> = changed_paths.into_iter().collect();
-
-                    let all_files = discovery::discover_files_with_options_async(
-                        root_buf.clone(),
-                        discovery_options.clone(),
-                    )
-                    .await;
-                    let changed_files: Vec<_> = all_files
-                        .into_iter()
-                        .filter(|f| changed_set.contains(&f.relative_path))
-                        .collect();
-
-                    if changed_files.is_empty() {
-                        tracing::info!("No supported files in changed set");
-                    } else {
-                        tracing::info!("Found {} changed files to index", changed_files.len());
-                    }
-
-                    SyncPlan {
-                        files: changed_files,
-                        strategy: SyncStrategy::PartialGit {
-                            prev_commit: last,
-                            current_commit,
-                        },
-                        deleted_paths,
-                    }
-                }
-            }
+            plan_git_aware(root_buf, storage, codebase, discovery_options).await?
         } else {
             tracing::info!("Not a git repository, using mtime-based partial sync");
-
             let known_mtimes = storage.get_file_mtimes(Some(&codebase.codebase_id)).await?;
             SyncPlan {
                 files: discovery::discover_modified_files_with_options_async(
@@ -222,6 +113,121 @@ pub async fn plan_with_options(
         }
     };
 
+    emit_sync_plan_diagnostic(&diagnostics, &plan, start).await;
+    Ok(plan)
+}
+
+async fn plan_git_aware(
+    root_buf: PathBuf,
+    storage: &Storage,
+    codebase: &Codebase,
+    discovery_options: &DiscoveryOptions,
+) -> anyhow::Result<SyncPlan> {
+    tracing::info!("Git repository detected, using git-aware partial sync");
+
+    let git_info = {
+        let root_buf = root_buf.clone();
+        tokio::task::spawn_blocking(move || git::get_git_info(&root_buf)).await??
+    };
+
+    let current_commit = match git_info.commit_sha {
+        Some(sha) => sha,
+        None => {
+            tracing::warn!("No commit SHA found (detached HEAD?), falling back to full sync");
+            return Ok(SyncPlan {
+                files: discovery::discover_files_with_options_async(
+                    root_buf,
+                    discovery_options.clone(),
+                )
+                .await,
+                strategy: SyncStrategy::Full,
+                deleted_paths: Vec::new(),
+            });
+        }
+    };
+
+    let last_commit = storage
+        .get_last_synced_commit(&codebase.codebase_id)
+        .await?;
+
+    match last_commit {
+        None => {
+            tracing::info!("No previous sync found, performing full sync");
+            Ok(SyncPlan {
+                files: discovery::discover_files_with_options_async(
+                    root_buf,
+                    discovery_options.clone(),
+                )
+                .await,
+                strategy: SyncStrategy::Full,
+                deleted_paths: Vec::new(),
+            })
+        }
+        Some(last) if last == current_commit => {
+            tracing::info!("Already up to date (commit: {})", current_commit);
+            Ok(SyncPlan {
+                files: vec![],
+                strategy: SyncStrategy::PartialGit {
+                    prev_commit: last,
+                    current_commit,
+                },
+                deleted_paths: Vec::new(),
+            })
+        }
+        Some(last) => {
+            tracing::info!(
+                "Changes detected ({} -> {}), performing partial sync",
+                &last[..8],
+                &current_commit[..8]
+            );
+
+            let changed_paths = {
+                let root_buf = root_buf.clone();
+                let last = last.clone();
+                tokio::task::spawn_blocking(move || git::get_diff_files(&root_buf, &last)).await??
+            };
+
+            let mut deleted_paths = Vec::new();
+            for path in &changed_paths {
+                if !root_buf.join(path).exists() {
+                    tracing::info!("Deleted file detected: {}", path);
+                    deleted_paths.push(path.clone());
+                }
+            }
+
+            let changed_set: HashSet<_> = changed_paths.into_iter().collect();
+
+            let all_files =
+                discovery::discover_files_with_options_async(root_buf, discovery_options.clone())
+                    .await;
+            let changed_files: Vec<_> = all_files
+                .into_iter()
+                .filter(|f| changed_set.contains(&f.relative_path))
+                .collect();
+
+            if changed_files.is_empty() {
+                tracing::info!("No supported files in changed set");
+            } else {
+                tracing::info!("Found {} changed files to index", changed_files.len());
+            }
+
+            Ok(SyncPlan {
+                files: changed_files,
+                strategy: SyncStrategy::PartialGit {
+                    prev_commit: last,
+                    current_commit,
+                },
+                deleted_paths,
+            })
+        }
+    }
+}
+
+async fn emit_sync_plan_diagnostic(
+    diagnostics: &DiagnosticsArc,
+    plan: &SyncPlan,
+    start: std::time::Instant,
+) {
     diagnostics
         .emit(DiagnosticEvent::SyncPlan {
             strategy: match plan.strategy {
@@ -234,10 +240,7 @@ pub async fn plan_with_options(
             duration_ms: start.elapsed().as_millis(),
         })
         .await;
-
-    Ok(plan)
 }
-
 
 pub async fn execute(
     plan: SyncPlan,
@@ -350,7 +353,10 @@ pub async fn execute(
                             .store_chunks_batch(&chunks, &embeddings, Some(&mtimes))
                             .await
                         {
-                            tracing::warn!("Failed to store chunks for {}: {e}", file.relative_path);
+                            tracing::warn!(
+                                "Failed to store chunks for {}: {e}",
+                                file.relative_path
+                            );
                             errors.fetch_add(1, Ordering::SeqCst);
                         } else {
                             total_chunks.fetch_add(chunks.len(), Ordering::SeqCst);
@@ -392,7 +398,9 @@ pub async fn finalize(
     match strategy {
         SyncStrategy::Full => {
             let commit = tokio::task::spawn_blocking(move || {
-                git::get_git_info(&root_buf).ok().and_then(|info| info.commit_sha)
+                git::get_git_info(&root_buf)
+                    .ok()
+                    .and_then(|info| info.commit_sha)
             })
             .await?;
             storage
@@ -407,7 +415,9 @@ pub async fn finalize(
         }
         SyncStrategy::PartialGit { .. } => {
             let commit = tokio::task::spawn_blocking(move || {
-                git::get_git_info(&root_buf).ok().and_then(|info| info.commit_sha)
+                git::get_git_info(&root_buf)
+                    .ok()
+                    .and_then(|info| info.commit_sha)
             })
             .await?;
             storage

@@ -2,7 +2,7 @@ use crate::diagnostics::{DiagnosticEvent, Diagnostics, DiagnosticsArc};
 use crate::embedding::EmbeddingEngine;
 use crate::git;
 use crate::storage::Storage;
-use crate::{Config, Language, SearchResult};
+use crate::{Config, Language, QueryRequest, SearchResult};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, transport::stdio, ServerHandler, ServiceExt};
@@ -335,7 +335,9 @@ impl KtServer {
         Ok(CallToolResult::success(vec![Content::text(xml)]))
     }
 
-    #[tool(description = "Sync (index) a directory into the knowledge base. Parses all .rs, .go, and .java files using Tree-sitter, generates embeddings, and stores them in Redis for search.")]
+    #[tool(
+        description = "Sync (index) a directory into the knowledge base. Parses all .rs, .go, and .java files using Tree-sitter, generates embeddings, and stores them in Redis for search."
+    )]
     async fn kt_sync(
         &self,
         Parameters(params): Parameters<SyncParams>,
@@ -346,7 +348,6 @@ impl KtServer {
 
     async fn kt_sync_inner(&self, params: SyncParams) -> Result<CallToolResult, rmcp::ErrorData> {
         self.ensure_ready().await.map_err(mcp_error)?;
-
 
         let root = std::path::Path::new(&params.directory_path);
         if !root.exists() {
@@ -421,7 +422,9 @@ impl KtServer {
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
-    #[tool(description = "Get git status information including current branch, commit SHA, and changed files.")]
+    #[tool(
+        description = "Get git status information including current branch, commit SHA, and changed files."
+    )]
     async fn kt_git_status(
         &self,
         Parameters(params): Parameters<GitStatusParams>,
@@ -645,6 +648,28 @@ impl KtServer {
 
         Ok(CallToolResult::success(vec![Content::text(xml)]))
     }
+
+    #[tool(
+        description = "Ask a high-level codebase question. The agentic RAG layer will plan and execute multiple retrieval steps to provide a grounded answer with citations."
+    )]
+    async fn kt_query(
+        &self,
+        Parameters(params): Parameters<QueryRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.with_diagnostics("kt_query", || self.kt_query_inner(params))
+            .await
+    }
+
+    async fn kt_query_inner(
+        &self,
+        _params: QueryRequest,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.ensure_ready().await.map_err(mcp_error)?;
+
+        // Stub implementation
+        let xml = "<query_result status=\"failure\">\n  <answer>The Agentic RAG layer is not yet implemented. This tool currently serves as a public contract for future development.</answer>\n</query_result>";
+        Ok(CallToolResult::success(vec![Content::text(xml)]))
+    }
 }
 
 #[tool_handler]
@@ -655,7 +680,7 @@ impl ServerHandler for KtServer {
         )
         .with_server_info(Implementation::new("kt", env!("CARGO_PKG_VERSION")))
         .with_instructions(
-            "kt (Knowledge Transfer) - A local multi-codebase RAG system. Use kt_search for global semantic code search, kt_read_file to read specific files across codebases, kt_sync to index/update a directory, and kt_list_codebases to discover aliases and roots. Scope search/read with directory_path or codebase_alias when needed.".to_string(),
+            "kt (Knowledge Transfer) - A local multi-codebase RAG system. Use kt_search for global semantic code search, kt_read_file to read specific files across codebases, kt_sync to index/update a directory, kt_list_codebases to discover aliases and roots, and kt_query for high-level abstract questions. Scope search/read/query with directory_path or codebase_alias when needed.".to_string(),
         )
     }
 }

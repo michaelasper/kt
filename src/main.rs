@@ -214,8 +214,15 @@ async fn run_sync(
         }));
 
     let strategy = plan.strategy.clone();
-    let stats =
-        kt::sync::execute(plan, &codebase, &storage, engine, progress.clone(), diagnostics).await?;
+    let stats = kt::sync::execute(
+        plan,
+        &codebase,
+        &storage,
+        engine,
+        progress.clone(),
+        diagnostics,
+    )
+    .await?;
     kt::sync::finalize(directory, &codebase, &strategy, &storage).await?;
 
     {
@@ -345,27 +352,24 @@ fn show_metrics(metrics: kt::diagnostics::MetricsSummary) {
 
     println!("{}", style("MCP Tool Usage:").cyan().bold());
     let mut tools: Vec<_> = metrics.tool_invocations.iter().collect();
-    tools.sort_by(|a, b| b.1.count.cmp(&a.1.count));
+    tools.sort_by_key(|b| std::cmp::Reverse(b.1.count));
 
     if tools.is_empty() {
         println!("  {}", style("No tool usage data collected yet.").dim());
     }
 
     for (name, stats) in tools {
-        let avg_lat = if stats.count > 0 {
-            stats.total_duration_ms / stats.count as u128
-        } else {
-            0
-        };
+        let avg_lat = stats
+            .total_duration_ms
+            .checked_div(stats.count as u128)
+            .unwrap_or(0);
         println!(
             "  {:<15} {:>4} calls ({:>3}% success) avg lat: {:>4}ms",
             style(name).white(),
             stats.count,
-            if stats.count > 0 {
-                stats.successes * 100 / stats.count
-            } else {
-                0
-            },
+            (stats.successes * 100)
+                .checked_div(stats.count)
+                .unwrap_or(0),
             avg_lat
         );
     }
@@ -384,11 +388,11 @@ fn show_metrics(metrics: kt::diagnostics::MetricsSummary) {
         "  Chunks Created: {}",
         style(metrics.indexing_stats.total_chunks).white()
     );
-    let avg_indexing = if metrics.indexing_stats.total_files > 0 {
-        metrics.indexing_stats.total_duration_ms / metrics.indexing_stats.total_files as u128
-    } else {
-        0
-    };
+    let avg_indexing = metrics
+        .indexing_stats
+        .total_duration_ms
+        .checked_div(metrics.indexing_stats.total_files as u128)
+        .unwrap_or(0);
     println!("  Avg Index Lat:  {}ms/file", style(avg_indexing).white());
     println!();
 
@@ -401,11 +405,11 @@ fn show_metrics(metrics: kt::diagnostics::MetricsSummary) {
         "  Total Results:  {}",
         style(metrics.search_stats.total_results).white()
     );
-    let avg_search = if metrics.search_stats.total_searches > 0 {
-        metrics.search_stats.total_duration_ms / metrics.search_stats.total_searches as u128
-    } else {
-        0
-    };
+    let avg_search = metrics
+        .search_stats
+        .total_duration_ms
+        .checked_div(metrics.search_stats.total_searches as u128)
+        .unwrap_or(0);
     println!("  Avg Search Lat: {}ms", style(avg_search).white());
     println!();
 

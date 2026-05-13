@@ -47,14 +47,7 @@ pub fn calculate_invoice_total(line_items: &[u64]) -> u64 {
         kt::diagnostics::DiagnosticsLevel::Off,
         temp.path(),
     ));
-    let plan = sync::plan(
-        temp.path(),
-        &storage,
-        &codebase,
-        true,
-        diagnostics.clone(),
-    )
-    .await?;
+    let plan = sync::plan(temp.path(), &storage, &codebase, true, diagnostics.clone()).await?;
     let strategy = plan.strategy.clone();
     let progress = std::sync::Arc::new(tokio::sync::Mutex::new(sync::NoopProgress));
     let stats = sync::execute(

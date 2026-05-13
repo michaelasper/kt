@@ -13,14 +13,12 @@ pub async fn parse_file_async(
     language: Language,
     codebase_id: String,
 ) -> Vec<Chunk> {
-    tokio::task::spawn_blocking(move || {
-        parse_file(&path, &relative_path, language, &codebase_id)
-    })
-    .await
-    .unwrap_or_else(|e| {
-        warn!("Task join error during parse_file_async: {e}");
-        Vec::new()
-    })
+    tokio::task::spawn_blocking(move || parse_file(&path, &relative_path, language, &codebase_id))
+        .await
+        .unwrap_or_else(|e| {
+            warn!("Task join error during parse_file_async: {e}");
+            Vec::new()
+        })
 }
 
 pub fn parse_file(
