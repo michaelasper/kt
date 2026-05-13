@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.7.0 (2026-05-13)
+
+* feat: add privacy-conscious diagnostics and metrics system ([8714745](https://github.com/michaelasper/kt/commit/8714745))
+* feat: define public contract for agentic RAG queries and flatten sync logic ([cdbe3c7](https://github.com/michaelasper/kt/commit/cdbe3c7))
+* perf: offload file discovery and git operations to blocking threads ([ff529dc](https://github.com/michaelasper/kt/commit/ff529dc))
+* perf: offload parsing and embedding to blocking threads and parallelize sync ([546a5cf](https://github.com/michaelasper/kt/commit/546a5cf))
+
 ## <small>0.6.2 (2026-05-12)</small>
 
 * fix(mcp): surface shadow index failures ([a09bded](https://github.com/michaelasper/kt/commit/a09bded)), closes [#12](https://github.com/michaelasper/kt/issues/12)
