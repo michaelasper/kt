@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.7.4 (2026-05-13)</small>
+
+* fix: standardize MCP error signaling to use JSON-RPC errors ([45ff6cc](https://github.com/michaelasper/kt/commit/45ff6cc)), closes [#15](https://github.com/michaelasper/kt/issues/15)
+
 ## <small>0.7.3 (2026-05-13)</small>
 
 * fix: propagate discovery errors and finalize async migration ([615ab92](https://github.com/michaelasper/kt/commit/615ab92)), closes [#10](https://github.com/michaelasper/kt/issues/10) [#31](https://github.com/michaelasper/kt/issues/31) [#10](https://github.com/michaelasper/kt/issues/10) [#31](https://github.com/michaelasper/kt/issues/31)
