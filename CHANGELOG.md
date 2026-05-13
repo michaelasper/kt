@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.8.0 (2026-05-13)
+
+* style(sync): format sync UI changes ([0ccb0b4](https://github.com/michaelasper/kt/commit/0ccb0b4))
+* feat(sync): redesign async sync progress UI ([4d4e1fb](https://github.com/michaelasper/kt/commit/4d4e1fb))
+
 ## <small>0.7.4 (2026-05-13)</small>
 
 * fix: standardize MCP error signaling to use JSON-RPC errors ([45ff6cc](https://github.com/michaelasper/kt/commit/45ff6cc)), closes [#15](https://github.com/michaelasper/kt/issues/15)
