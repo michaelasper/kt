@@ -43,10 +43,29 @@ pub fn calculate_invoice_total(line_items: &[u64]) -> u64 {
     let engine = std::sync::Arc::new(EmbeddingEngine::new(&config).await?);
 
     let codebase = storage.register_codebase(temp.path(), None).await?;
-    let plan = sync::plan(temp.path(), &storage, &codebase, true).await?;
+    let diagnostics = std::sync::Arc::new(kt::diagnostics::Diagnostics::new(
+        kt::diagnostics::DiagnosticsLevel::Off,
+        temp.path(),
+    ));
+    let plan = sync::plan(
+        temp.path(),
+        &storage,
+        &codebase,
+        true,
+        diagnostics.clone(),
+    )
+    .await?;
     let strategy = plan.strategy.clone();
     let progress = std::sync::Arc::new(tokio::sync::Mutex::new(sync::NoopProgress));
-    let stats = sync::execute(plan, &codebase, &storage, engine.clone(), progress).await?;
+    let stats = sync::execute(
+        plan,
+        &codebase,
+        &storage,
+        engine.clone(),
+        progress,
+        diagnostics,
+    )
+    .await?;
     assert_eq!(stats.errors, 0);
     sync::finalize(temp.path(), &codebase, &strategy, &storage).await?;
 

@@ -1,5 +1,6 @@
 pub mod codebase;
 pub mod config;
+pub mod diagnostics;
 pub mod discovery;
 pub mod embedding;
 pub mod error;

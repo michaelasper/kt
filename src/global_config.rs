@@ -1,3 +1,4 @@
+use crate::diagnostics::DiagnosticsLevel;
 use crate::discovery::default_exclude_patterns;
 use anyhow::{Context, Result};
 use console::style;
@@ -84,6 +85,7 @@ pub struct GlobalConfig {
     pub mcp: McpSettings,
     pub redis: RedisSettings,
     pub indexing: IndexingSettings,
+    pub diagnostics: DiagnosticsLevel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +128,7 @@ impl Default for GlobalConfig {
             mcp: McpSettings::default(),
             redis: RedisSettings::default(),
             indexing: IndexingSettings::default(),
+            diagnostics: DiagnosticsLevel::default(),
         }
     }
 }
@@ -374,6 +377,17 @@ impl GlobalConfigManager {
         println!(
             "  Exclude Patterns (active): {}",
             style(config.indexing.exclude_patterns.join(", ")).dim()
+        );
+        println!();
+
+        println!("{}", style("Diagnostics:").cyan().bold());
+        println!(
+            "  Level: {}",
+            match config.diagnostics {
+                DiagnosticsLevel::Off => style("Off").yellow(),
+                DiagnosticsLevel::Local => style("Local").green(),
+                DiagnosticsLevel::Verbose => style("Verbose").green().bold(),
+            }
         );
         println!();
 

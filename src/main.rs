@@ -46,6 +46,19 @@ enum Commands {
         #[command(subcommand)]
         action: McpAction,
     },
+    /// Manage diagnostics and metrics
+    Diagnostics {
+        #[command(subcommand)]
+        action: DiagnosticsAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DiagnosticsAction {
+    /// Show aggregate diagnostic metrics
+    Show,
+    /// Clear all local diagnostic logs
+    Clear,
 }
 
 #[derive(Subcommand)]
@@ -104,6 +117,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Mcp { action } => {
             run_mcp_action(action).await?;
+        }
+        Commands::Diagnostics { action } => {
+            run_diagnostics_action(action).await?;
         }
     }
 
@@ -167,12 +183,24 @@ async fn run_sync(
     storage.ensure_index().await?;
     let codebase = storage.register_codebase(directory, codebase_alias).await?;
 
+    let global_manager = kt::global_config::GlobalConfigManager::new()?;
+    let diagnostics = Arc::new(kt::diagnostics::Diagnostics::new(
+        config.diagnostics.clone(),
+        global_manager.get_config_dir(),
+    ));
+
     let engine = Arc::new(kt::embedding::EmbeddingEngine::new(config).await?);
 
     let discovery_options = config.discovery_options();
-    let plan =
-        kt::sync::plan_with_options(directory, &storage, &codebase, full, &discovery_options)
-            .await?;
+    let plan = kt::sync::plan_with_options(
+        directory,
+        &storage,
+        &codebase,
+        full,
+        &discovery_options,
+        diagnostics.clone(),
+    )
+    .await?;
 
     if plan.files.is_empty() {
         tracing::info!("No supported files found to sync");
@@ -186,7 +214,8 @@ async fn run_sync(
         }));
 
     let strategy = plan.strategy.clone();
-    let stats = kt::sync::execute(plan, &codebase, &storage, engine, progress.clone()).await?;
+    let stats =
+        kt::sync::execute(plan, &codebase, &storage, engine, progress.clone(), diagnostics).await?;
     kt::sync::finalize(directory, &codebase, &strategy, &storage).await?;
 
     {
@@ -272,6 +301,121 @@ async fn run_mcp_action(action: McpAction) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn run_diagnostics_action(action: DiagnosticsAction) -> anyhow::Result<()> {
+    let config = kt::Config::from_env();
+    let global_manager = kt::global_config::GlobalConfigManager::new()?;
+    let diagnostics = kt::diagnostics::Diagnostics::new(
+        config.diagnostics.clone(),
+        global_manager.get_config_dir(),
+    );
+
+    match action {
+        DiagnosticsAction::Show => {
+            let metrics = diagnostics.get_metrics().await?;
+            show_metrics(metrics);
+        }
+        DiagnosticsAction::Clear => {
+            diagnostics.clear().await?;
+            println!("{} Diagnostic logs cleared", console::style("✓").green());
+        }
+    }
+
+    Ok(())
+}
+
+fn show_metrics(metrics: kt::diagnostics::MetricsSummary) {
+    use console::style;
+
+    println!();
+    println!(
+        "{}",
+        style("╔════════════════════════════════════════════════════════════╗").cyan()
+    );
+    println!(
+        "{}",
+        style("║                kt Diagnostics Summary                    ║").cyan()
+    );
+    println!(
+        "{}",
+        style("╚════════════════════════════════════════════════════════════╝").cyan()
+    );
+    println!();
+
+    println!("{}", style("MCP Tool Usage:").cyan().bold());
+    let mut tools: Vec<_> = metrics.tool_invocations.iter().collect();
+    tools.sort_by(|a, b| b.1.count.cmp(&a.1.count));
+
+    if tools.is_empty() {
+        println!("  {}", style("No tool usage data collected yet.").dim());
+    }
+
+    for (name, stats) in tools {
+        let avg_lat = if stats.count > 0 {
+            stats.total_duration_ms / stats.count as u128
+        } else {
+            0
+        };
+        println!(
+            "  {:<15} {:>4} calls ({:>3}% success) avg lat: {:>4}ms",
+            style(name).white(),
+            stats.count,
+            if stats.count > 0 {
+                stats.successes * 100 / stats.count
+            } else {
+                0
+            },
+            avg_lat
+        );
+    }
+    println!();
+
+    println!("{}", style("Sync & Indexing:").cyan().bold());
+    println!(
+        "  Plans:          {}",
+        style(metrics.sync_stats.total_plans).white()
+    );
+    println!(
+        "  Files Indexed:  {}",
+        style(metrics.indexing_stats.total_files).white()
+    );
+    println!(
+        "  Chunks Created: {}",
+        style(metrics.indexing_stats.total_chunks).white()
+    );
+    let avg_indexing = if metrics.indexing_stats.total_files > 0 {
+        metrics.indexing_stats.total_duration_ms / metrics.indexing_stats.total_files as u128
+    } else {
+        0
+    };
+    println!("  Avg Index Lat:  {}ms/file", style(avg_indexing).white());
+    println!();
+
+    println!("{}", style("Search:").cyan().bold());
+    println!(
+        "  Total Searches: {}",
+        style(metrics.search_stats.total_searches).white()
+    );
+    println!(
+        "  Total Results:  {}",
+        style(metrics.search_stats.total_results).white()
+    );
+    let avg_search = if metrics.search_stats.total_searches > 0 {
+        metrics.search_stats.total_duration_ms / metrics.search_stats.total_searches as u128
+    } else {
+        0
+    };
+    println!("  Avg Search Lat: {}ms", style(avg_search).white());
+    println!();
+
+    if !metrics.errors.is_empty() {
+        println!("{}", style("Common Errors:").red().bold());
+        for (category, count) in metrics.errors {
+            println!("  {:<20} {}", style(category).white(), count);
+        }
+        println!();
+    }
 }
 
 fn parse_harness(name: &str) -> anyhow::Result<HarnessType> {

@@ -24,6 +24,7 @@ sha2 = "0.10"
 dirs = "6"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 thiserror = "2"
 tracing = "0.1"

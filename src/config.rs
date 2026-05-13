@@ -1,3 +1,4 @@
+use crate::diagnostics::DiagnosticsLevel;
 use crate::discovery::{default_exclude_patterns, DiscoveryOptions};
 use crate::global_config::{GlobalConfig, GlobalConfigManager};
 use anyhow::{Context, Result};
@@ -13,6 +14,7 @@ pub struct Config {
     pub redis_timeout: Duration,
     pub model_cache_dir: PathBuf,
     pub exclude_patterns: Vec<String>,
+    pub diagnostics: DiagnosticsLevel,
 }
 
 impl Config {
@@ -22,6 +24,7 @@ impl Config {
             std::env::var("KT_REDIS_URL").ok(),
             std::env::var("KT_REDIS_TIMEOUT_SECONDS").ok(),
             std::env::var("KT_MODEL_CACHE_DIR").ok().map(PathBuf::from),
+            std::env::var("KT_DIAGNOSTICS").ok(),
             global_config.as_ref(),
         )
     }
@@ -33,6 +36,7 @@ impl Config {
                 std::env::var("KT_REDIS_URL").ok(),
                 std::env::var("KT_REDIS_TIMEOUT_SECONDS").ok(),
                 std::env::var("KT_MODEL_CACHE_DIR").ok().map(PathBuf::from),
+                std::env::var("KT_DIAGNOSTICS").ok(),
                 None,
             )
             .unwrap_or_else(|fallback_error| {
@@ -44,6 +48,7 @@ impl Config {
                     redis_timeout: Duration::from_secs(DEFAULT_REDIS_TIMEOUT_SECONDS),
                     model_cache_dir: default_model_cache_dir(),
                     exclude_patterns: default_exclude_patterns(),
+                    diagnostics: DiagnosticsLevel::Off,
                 }
             })
         })
@@ -65,6 +70,7 @@ impl Config {
         redis_url_env: Option<String>,
         redis_timeout_seconds_env: Option<String>,
         model_cache_dir_env: Option<PathBuf>,
+        diagnostics_env: Option<String>,
         global_config: Option<&GlobalConfig>,
     ) -> Result<Self> {
         let redis_url = redis_url_env
@@ -88,11 +94,17 @@ impl Config {
         let model_cache_dir = model_cache_dir_env.unwrap_or_else(default_model_cache_dir);
         let exclude_patterns = merge_exclude_patterns(global_config);
 
+        let diagnostics = diagnostics_env
+            .map(DiagnosticsLevel::from)
+            .or_else(|| global_config.map(|config| config.diagnostics.clone()))
+            .unwrap_or_default();
+
         Ok(Self {
             redis_url,
             redis_timeout: Duration::from_secs(redis_timeout_seconds),
             model_cache_dir,
             exclude_patterns,
+            diagnostics,
         })
     }
 }
@@ -133,47 +145,47 @@ fn merge_exclude_patterns(global_config: Option<&GlobalConfig>) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::global_config::GlobalConfig;
+#[test]
+fn config_prefers_global_redis_settings_when_env_is_absent() {
+    let mut global = GlobalConfig::default();
+    global.redis.url = "redis://127.0.0.1:6380".to_string();
+    global.redis.timeout_seconds = 12;
 
-    #[test]
-    fn config_prefers_global_redis_settings_when_env_is_absent() {
-        let mut global = GlobalConfig::default();
-        global.redis.url = "redis://127.0.0.1:6380".to_string();
-        global.redis.timeout_seconds = 12;
+    let config = Config::from_sources(None, None, None, None, Some(&global)).unwrap();
 
-        let config = Config::from_sources(None, None, None, Some(&global)).unwrap();
+    assert_eq!(config.redis_url, "redis://127.0.0.1:6380");
+    assert_eq!(config.redis_timeout, Duration::from_secs(12));
+}
 
-        assert_eq!(config.redis_url, "redis://127.0.0.1:6380");
-        assert_eq!(config.redis_timeout, Duration::from_secs(12));
-    }
+#[test]
+fn config_env_redis_settings_override_global_config() {
+    let mut global = GlobalConfig::default();
+    global.redis.url = "redis://127.0.0.1:6380".to_string();
+    global.redis.timeout_seconds = 12;
 
-    #[test]
-    fn config_env_redis_settings_override_global_config() {
-        let mut global = GlobalConfig::default();
-        global.redis.url = "redis://127.0.0.1:6380".to_string();
-        global.redis.timeout_seconds = 12;
+    let config = Config::from_sources(
+        Some("redis://redis.example:6379".to_string()),
+        Some("30".to_string()),
+        None,
+        None,
+        Some(&global),
+    )
+    .unwrap();
 
-        let config = Config::from_sources(
-            Some("redis://redis.example:6379".to_string()),
-            Some("30".to_string()),
-            None,
-            Some(&global),
-        )
-        .unwrap();
+    assert_eq!(config.redis_url, "redis://redis.example:6379");
+    assert_eq!(config.redis_timeout, Duration::from_secs(30));
+}
 
-        assert_eq!(config.redis_url, "redis://redis.example:6379");
-        assert_eq!(config.redis_timeout, Duration::from_secs(30));
-    }
+#[test]
+fn config_merges_default_and_global_indexing_exclude_patterns() {
+    let mut global = GlobalConfig::default();
+    global.indexing.exclude_patterns = vec!["generated".to_string(), "fixtures/**".to_string()];
 
-    #[test]
-    fn config_merges_default_and_global_indexing_exclude_patterns() {
-        let mut global = GlobalConfig::default();
-        global.indexing.exclude_patterns = vec!["generated".to_string(), "fixtures/**".to_string()];
+    let config = Config::from_sources(None, None, None, None, Some(&global)).unwrap();
 
-        let config = Config::from_sources(None, None, None, Some(&global)).unwrap();
-
-        assert!(config.exclude_patterns.contains(&"target".to_string()));
-        assert!(config.exclude_patterns.contains(&".git".to_string()));
-        assert!(config.exclude_patterns.contains(&"generated".to_string()));
-        assert!(config.exclude_patterns.contains(&"fixtures/**".to_string()));
+    assert!(config.exclude_patterns.contains(&"target".to_string()));
+    assert!(config.exclude_patterns.contains(&".git".to_string()));
+    assert!(config.exclude_patterns.contains(&"generated".to_string()));
+    assert!(config.exclude_patterns.contains(&"fixtures/**".to_string()));
     }
 }

@@ -1,3 +1,4 @@
+use crate::diagnostics::{DiagnosticEvent, Diagnostics, DiagnosticsArc};
 use crate::embedding::EmbeddingEngine;
 use crate::git;
 use crate::storage::Storage;
@@ -41,6 +42,7 @@ struct KtServerInner {
     storage: RwLock<Storage>,
     embedding: RwLock<Option<Arc<EmbeddingEngine>>>,
     config: Config,
+    diagnostics: DiagnosticsArc,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -105,13 +107,41 @@ pub struct IndexPrParams {
 pub struct ListCodebasesParams {}
 
 impl KtServer {
+    async fn with_diagnostics<F, Fut, T>(&self, tool_name: &str, f: F) -> Result<T, rmcp::ErrorData>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, rmcp::ErrorData>>,
+    {
+        let start = std::time::Instant::now();
+        let result = f().await;
+        let success = result.is_ok();
+
+        self.inner
+            .diagnostics
+            .emit(DiagnosticEvent::ToolInvoke {
+                name: tool_name.to_string(),
+                duration_ms: start.elapsed().as_millis(),
+                success,
+            })
+            .await;
+
+        result
+    }
+
     pub fn new(config: Config) -> anyhow::Result<Self> {
         let storage = Storage::new(&config)?;
+        let global_manager = crate::global_config::GlobalConfigManager::new()?;
+        let diagnostics = Arc::new(Diagnostics::new(
+            config.diagnostics.clone(),
+            global_manager.get_config_dir(),
+        ));
+
         Ok(Self {
             inner: Arc::new(KtServerInner {
                 storage: RwLock::new(storage),
                 embedding: RwLock::new(None),
                 config,
+                diagnostics,
             }),
         })
     }
@@ -137,12 +167,23 @@ impl KtServer {
 #[tool_router]
 impl KtServer {
     #[tool(
-        description = "Search the indexed codebase using hybrid vector + keyword search. Use this to find code by semantic intent (e.g. 'how do we hash passwords') or exact names (e.g. 'BcryptHasher')."
+        description = "Search the indexed codebase using hybrid vector + keyword search. Use this to find code by semantic intent (e.g. 'how do we handle passwords') or exact names (e.g. 'BcryptHasher')."
     )]
     async fn kt_search(
         &self,
         Parameters(params): Parameters<SearchParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.with_diagnostics("kt_search", || self.kt_search_inner(params))
+            .await
+    }
+
+    async fn kt_search_inner(
+        &self,
+        params: SearchParams,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let start = std::time::Instant::now();
+        let query_len = params.query.len();
+
         self.ensure_ready().await.map_err(mcp_error)?;
 
         let top_k = params.top_k.unwrap_or(3).min(10);
@@ -207,6 +248,16 @@ impl KtServer {
 
         let results = merge_and_deduplicate(filtered_main, shadow_results, top_k);
 
+        self.inner
+            .diagnostics
+            .emit(DiagnosticEvent::Search {
+                query_len,
+                results_count: results.len(),
+                duration_ms: start.elapsed().as_millis(),
+                source: "hybrid".to_string(),
+            })
+            .await;
+
         let one_hop = resolve_one_hop_context(&storage, &results).await;
 
         let xml = format_search_results(&results, &params.query, headers_only, &one_hop, &warnings);
@@ -219,6 +270,14 @@ impl KtServer {
     async fn kt_read_file(
         &self,
         Parameters(params): Parameters<ReadFileParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.with_diagnostics("kt_read_file", || self.kt_read_file_inner(params))
+            .await
+    }
+
+    async fn kt_read_file_inner(
+        &self,
+        params: ReadFileParams,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         self.ensure_ready().await.map_err(mcp_error)?;
 
@@ -276,14 +335,18 @@ impl KtServer {
         Ok(CallToolResult::success(vec![Content::text(xml)]))
     }
 
-    #[tool(
-        description = "Sync (index) a directory into the knowledge base. Parses all .rs, .go, and .java files using Tree-sitter, generates embeddings, and stores them in Redis for search."
-    )]
+    #[tool(description = "Sync (index) a directory into the knowledge base. Parses all .rs, .go, and .java files using Tree-sitter, generates embeddings, and stores them in Redis for search.")]
     async fn kt_sync(
         &self,
         Parameters(params): Parameters<SyncParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.with_diagnostics("kt_sync", || self.kt_sync_inner(params))
+            .await
+    }
+
+    async fn kt_sync_inner(&self, params: SyncParams) -> Result<CallToolResult, rmcp::ErrorData> {
         self.ensure_ready().await.map_err(mcp_error)?;
+
 
         let root = std::path::Path::new(&params.directory_path);
         if !root.exists() {
@@ -310,10 +373,16 @@ impl KtServer {
             .ok_or_else(|| mcp_error("Embedding engine not available"))?;
 
         let discovery_options = self.inner.config.discovery_options();
-        let plan =
-            crate::sync::plan_with_options(root, &storage, &codebase, full, &discovery_options)
-                .await
-                .map_err(mcp_error)?;
+        let plan = crate::sync::plan_with_options(
+            root,
+            &storage,
+            &codebase,
+            full,
+            &discovery_options,
+            self.inner.diagnostics.clone(),
+        )
+        .await
+        .map_err(mcp_error)?;
 
         if plan.files.is_empty() {
             crate::sync::finalize(root, &codebase, &plan.strategy, &storage)
@@ -326,9 +395,16 @@ impl KtServer {
 
         let strategy = plan.strategy.clone();
         let progress = Arc::new(tokio::sync::Mutex::new(crate::sync::NoopProgress));
-        let stats = crate::sync::execute(plan, &codebase, &storage, engine.clone(), progress)
-            .await
-            .map_err(mcp_error)?;
+        let stats = crate::sync::execute(
+            plan,
+            &codebase,
+            &storage,
+            engine.clone(),
+            progress,
+            self.inner.diagnostics.clone(),
+        )
+        .await
+        .map_err(mcp_error)?;
 
         crate::sync::finalize(root, &codebase, &strategy, &storage)
             .await
@@ -345,12 +421,18 @@ impl KtServer {
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
-    #[tool(
-        description = "Get git status information including current branch, commit SHA, and changed files."
-    )]
+    #[tool(description = "Get git status information including current branch, commit SHA, and changed files.")]
     async fn kt_git_status(
         &self,
         Parameters(params): Parameters<GitStatusParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.with_diagnostics("kt_git_status", || self.kt_git_status_inner(params))
+            .await
+    }
+
+    async fn kt_git_status_inner(
+        &self,
+        params: GitStatusParams,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let root = std::path::PathBuf::from(&params.directory_path);
         let git_info = tokio::task::spawn_blocking(move || git::get_git_info(&root))
@@ -388,6 +470,15 @@ impl KtServer {
         &self,
         Parameters(params): Parameters<IndexPrParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.with_diagnostics("kt_index_pr", || self.kt_index_pr_inner(params))
+            .await
+    }
+
+    async fn kt_index_pr_inner(
+        &self,
+        params: IndexPrParams,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let start = std::time::Instant::now();
         self.ensure_ready().await.map_err(mcp_error)?;
 
         let root = std::path::Path::new(&params.directory_path);
@@ -499,6 +590,15 @@ impl KtServer {
             }
         }
 
+        self.inner
+            .diagnostics
+            .emit(DiagnosticEvent::ShadowIndexUpdate {
+                files: total_files,
+                chunks: total_chunks,
+                duration_ms: start.elapsed().as_millis(),
+            })
+            .await;
+
         let msg = format!(
             "<shadow_index codebase_id=\"{}\" codebase_alias=\"{}\" root_path=\"{}\" files=\"{}\" chunks=\"{}\" ttl=\"{}\" base=\"{}\" />",
             xml_escape(&codebase.codebase_id),
@@ -520,6 +620,11 @@ impl KtServer {
         &self,
         Parameters(_params): Parameters<ListCodebasesParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.with_diagnostics("kt_list_codebases", || self.kt_list_codebases_inner())
+            .await
+    }
+
+    async fn kt_list_codebases_inner(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         self.ensure_ready().await.map_err(mcp_error)?;
 
         let storage = self.inner.storage.read().await;
