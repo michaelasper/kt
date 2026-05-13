@@ -95,10 +95,9 @@ impl PrettySyncUI {
         );
 
         let chunks_bar = multi.add(ProgressBar::new(0));
-        let chunks_style =
-            ProgressStyle::with_template("  [{prefix:.cyan}] {spinner} {msg}")
-                .expect("Failed to parse chunks progress bar template")
-                .progress_chars("▓▓░");
+        let chunks_style = ProgressStyle::with_template("  [{prefix:.cyan}] {spinner} {msg}")
+            .expect("Failed to parse chunks progress bar template")
+            .progress_chars("▓▓░");
         chunks_bar.set_style(chunks_style);
         chunks_bar.set_prefix(" CHUNKS ");
         chunks_bar.set_message(" waiting for work...");
@@ -126,14 +125,16 @@ impl PrettySyncUI {
     }
 
     fn start_file(&mut self, _path: &str, _file_index: usize) {
-        self.target_bar
-            .set_prefix(format!(" ACTIVE {}/{}", self.active_files + 1, self.total_files));
+        self.target_bar.set_prefix(format!(
+            " ACTIVE {}/{}",
+            self.active_files + 1,
+            self.total_files
+        ));
         self.active_files += 1;
         self.files_started += 1;
         let shred = self.shred_message();
         self.target_bar.set_message(shred);
-        self.chunks_bar
-            .set_message(self.status_line("shredding"));
+        self.chunks_bar.set_message(self.status_line("shredding"));
         self.target_bar.tick();
         self.chunks_bar.tick();
     }
@@ -144,10 +145,11 @@ impl PrettySyncUI {
         let _ = _path;
         let shred = self.shred_message();
         self.target_bar.set_message(shred);
-        self.chunks_bar
-            .set_message(self.status_line("processed"));
-        self.target_bar
-            .set_prefix(format!(" ACTIVE {}/{}", self.active_files, self.total_files));
+        self.chunks_bar.set_message(self.status_line("processed"));
+        self.target_bar.set_prefix(format!(
+            " ACTIVE {}/{}",
+            self.active_files, self.total_files
+        ));
         self.chunks_bar.tick();
         self.target_bar.tick();
     }
@@ -188,16 +190,15 @@ impl PrettySyncUI {
             _ => ".",
         };
         self.shred_tick += 1;
-        format!(
-            "{}{}",
-            style("shredding").yellow(),
-            style(dots).green()
-        )
+        format!("{}{}", style("shredding").yellow(), style(dots).green())
     }
 }
 
 fn format_sync_summary(total_files: usize, total_chunks: usize) -> String {
-    format!("    {} files shredded into {} chunks", total_files, total_chunks)
+    format!(
+        "    {} files shredded into {} chunks",
+        total_files, total_chunks
+    )
 }
 
 fn rain_loop(rx: mpsc::Receiver<()>, bars: Vec<ProgressBar>) {
@@ -285,7 +286,10 @@ mod tests {
         assert_eq!(ui.active_files, 0);
         assert_eq!(ui.total_chunks, 22);
 
-        assert_eq!(format_sync_summary(3, 22), "    3 files shredded into 22 chunks");
+        assert_eq!(
+            format_sync_summary(3, 22),
+            "    3 files shredded into 22 chunks"
+        );
         ui.finish(3, 22);
     }
 }
