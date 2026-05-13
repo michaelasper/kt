@@ -1,11 +1,27 @@
 use crate::{Chunk, Language};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::warn;
 use tree_sitter::{Node, Parser, Tree};
 
 mod languages;
 
 pub use languages::LanguageConfig;
+
+pub async fn parse_file_async(
+    path: PathBuf,
+    relative_path: String,
+    language: Language,
+    codebase_id: String,
+) -> Vec<Chunk> {
+    tokio::task::spawn_blocking(move || {
+        parse_file(&path, &relative_path, language, &codebase_id)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        warn!("Task join error during parse_file_async: {e}");
+        Vec::new()
+    })
+}
 
 pub fn parse_file(
     path: &Path,
@@ -384,6 +400,24 @@ impl Foo {
         let chunks = fallback_line_chunks(source, "test.rs", Language::Rust, "test-codebase");
         assert!(!chunks.is_empty());
         assert_eq!(chunks[0].node_type, "text_block");
+    }
+
+    #[tokio::test]
+    async fn test_parse_file_async() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.rs");
+        std::fs::write(&file_path, "fn main() {}").unwrap();
+
+        let chunks = parse_file_async(
+            file_path,
+            "test.rs".to_string(),
+            Language::Rust,
+            "test-codebase".to_string(),
+        )
+        .await;
+
+        assert!(!chunks.is_empty());
+        assert_eq!(chunks[0].name, "main");
     }
 
     #[test]

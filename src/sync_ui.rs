@@ -40,7 +40,7 @@ impl SyncUI {
         }
     }
 
-    pub fn finish(self, total_files: usize, total_chunks: usize) {
+    pub fn finish(&mut self, total_files: usize, total_chunks: usize) {
         match self {
             SyncUI::Pretty(ui) => ui.finish(total_files, total_chunks),
             SyncUI::Plain => {
@@ -133,7 +133,7 @@ impl PrettySyncUI {
         self.chunks_bar.set_position(chunks as u64);
     }
 
-    fn finish(mut self, total_files: usize, total_chunks: usize) {
+    fn finish(&mut self, total_files: usize, total_chunks: usize) {
         let _ = self.tx.send(());
         if let Some(handle) = self.rain_handle.take() {
             let _ = handle.join();

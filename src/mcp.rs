@@ -39,7 +39,7 @@ pub struct KtServer {
 #[derive(Debug)]
 struct KtServerInner {
     storage: RwLock<Storage>,
-    embedding: RwLock<Option<EmbeddingEngine>>,
+    embedding: RwLock<Option<Arc<EmbeddingEngine>>>,
     config: Config,
 }
 
@@ -126,7 +126,7 @@ impl KtServer {
             let mut embedding = self.inner.embedding.write().await;
             if embedding.is_none() {
                 let engine = EmbeddingEngine::new(&self.inner.config).await?;
-                *embedding = Some(engine);
+                *embedding = Some(Arc::new(engine));
             }
         }
 
@@ -324,12 +324,13 @@ impl KtServer {
             )]));
         }
 
-        let mut progress = crate::sync::NoopProgress;
-        let stats = crate::sync::execute(&plan, &codebase, &storage, engine, &mut progress)
+        let strategy = plan.strategy.clone();
+        let progress = Arc::new(tokio::sync::Mutex::new(crate::sync::NoopProgress));
+        let stats = crate::sync::execute(plan, &codebase, &storage, engine.clone(), progress)
             .await
             .map_err(mcp_error)?;
 
-        crate::sync::finalize(root, &codebase, &plan.strategy, &storage)
+        crate::sync::finalize(root, &codebase, &strategy, &storage)
             .await
             .map_err(mcp_error)?;
 
@@ -444,8 +445,13 @@ impl KtServer {
             }
 
             let language = language.unwrap();
-            let chunks =
-                crate::indexing::parse_file(&file_path, filepath, language, &codebase.codebase_id);
+            let chunks = crate::indexing::parse_file_async(
+                file_path,
+                filepath.to_string(),
+                language,
+                codebase.codebase_id.clone(),
+            )
+            .await;
 
             if chunks.is_empty() {
                 continue;
@@ -455,9 +461,15 @@ impl KtServer {
                 .iter()
                 .map(crate::embedding::chunk_embedding_text)
                 .collect();
-            let text_refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-            match engine.embed_batch(&text_refs) {
-                Ok(embeddings) => {
+            let engine_clone = engine.clone();
+            let embeddings_result = tokio::task::spawn_blocking(move || {
+                let text_refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+                engine_clone.embed_batch(&text_refs)
+            })
+            .await;
+
+            match embeddings_result {
+                Ok(Ok(embeddings)) => {
                     if let Err(e) = storage
                         .store_shadow_chunks_batch(&chunks, &embeddings, ttl_seconds)
                         .await
@@ -468,8 +480,11 @@ impl KtServer {
                     total_chunks += chunks.len();
                     total_files += 1;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     warn!("Failed to embed chunks for {}: {e}", filepath);
+                }
+                Err(e) => {
+                    warn!("Task join error during embedding: {e}");
                 }
             }
         }

@@ -2,9 +2,14 @@ use crate::discovery::{self, DiscoveredFile, DiscoveryOptions};
 use crate::git;
 use crate::storage::Storage;
 use crate::Codebase;
+use futures::StreamExt;
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use tokio::sync::{Mutex, Semaphore};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncStrategy {
     Full,
     PartialGit {
@@ -14,6 +19,7 @@ pub enum SyncStrategy {
     PartialMtime,
 }
 
+#[derive(Debug, Clone)]
 pub struct SyncPlan {
     pub files: Vec<DiscoveredFile>,
     pub strategy: SyncStrategy,
@@ -29,9 +35,7 @@ pub struct SyncStats {
 pub trait SyncProgress: Send + Sync {
     fn start_file(&mut self, path: &str, index: usize);
     fn finish_file(&mut self, path: &str, chunks: usize);
-    fn finish(self, files: usize, chunks: usize)
-    where
-        Self: Sized;
+    fn finish(&mut self, files: usize, chunks: usize);
 }
 
 pub struct NoopProgress;
@@ -39,7 +43,7 @@ pub struct NoopProgress;
 impl SyncProgress for NoopProgress {
     fn start_file(&mut self, _path: &str, _index: usize) {}
     fn finish_file(&mut self, _path: &str, _chunks: usize) {}
-    fn finish(self, _files: usize, _chunks: usize) {}
+    fn finish(&mut self, _files: usize, _chunks: usize) {}
 }
 
 pub async fn plan(
@@ -176,11 +180,11 @@ pub async fn plan_with_options(
 }
 
 pub async fn execute(
-    plan: &SyncPlan,
+    plan: SyncPlan,
     codebase: &Codebase,
     storage: &Storage,
-    engine: &crate::embedding::EmbeddingEngine,
-    progress: &mut dyn SyncProgress,
+    engine: Arc<crate::embedding::EmbeddingEngine>,
+    progress: Arc<Mutex<dyn SyncProgress>>,
 ) -> anyhow::Result<SyncStats> {
     for path in &plan.deleted_paths {
         tracing::info!("Removing deleted file from index: {}", path);
@@ -192,64 +196,108 @@ pub async fn execute(
         }
     }
 
-    let mut total_chunks = 0usize;
-    let mut total_files = 0usize;
-    let mut errors = 0usize;
+    let total_chunks = Arc::new(AtomicUsize::new(0));
+    let total_files = Arc::new(AtomicUsize::new(0));
+    let errors = Arc::new(AtomicUsize::new(0));
 
-    for (i, file) in plan.files.iter().enumerate() {
-        let chunks = crate::indexing::parse_file(
-            &file.path,
-            &file.relative_path,
-            file.language,
-            &codebase.codebase_id,
-        );
-        if chunks.is_empty() {
-            continue;
-        }
+    let concurrency = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(4);
+    let semaphore = Arc::new(Semaphore::new(concurrency));
 
-        progress.start_file(&file.relative_path, i);
+    let files_to_sync = plan.files;
 
-        if let Err(e) = storage
-            .remove_file_chunks_scoped(&codebase.codebase_id, &file.relative_path)
-            .await
-        {
-            tracing::warn!("Failed to clean old chunks for {}: {e}", file.relative_path);
-        }
+    futures::stream::iter(files_to_sync.into_iter().enumerate())
+        .for_each_concurrent(concurrency, |(i, file)| {
+            let storage = storage.clone();
+            let engine = engine.clone();
+            let codebase_id = codebase.codebase_id.clone();
+            let total_chunks = total_chunks.clone();
+            let total_files = total_files.clone();
+            let errors = errors.clone();
+            let semaphore = semaphore.clone();
+            let progress = progress.clone();
 
-        let texts: Vec<String> = chunks
-            .iter()
-            .map(crate::embedding::chunk_embedding_text)
-            .collect();
-        let text_refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-        match engine.embed_batch(&text_refs) {
-            Ok(embeddings) => {
-                let mtime = discovery::get_file_mtime(&file.path).unwrap_or_default();
-                let mtimes = vec![mtime; chunks.len()];
+            async move {
+                let _permit = match semaphore.acquire().await {
+                    Ok(p) => p,
+                    Err(_) => return,
+                };
+
+                let chunks = crate::indexing::parse_file_async(
+                    file.path.clone(),
+                    file.relative_path.clone(),
+                    file.language,
+                    codebase_id.clone(),
+                )
+                .await;
+
+                if chunks.is_empty() {
+                    return;
+                }
+
+                {
+                    let mut p = progress.lock().await;
+                    p.start_file(&file.relative_path, i);
+                }
 
                 if let Err(e) = storage
-                    .store_chunks_batch(&chunks, &embeddings, Some(&mtimes))
+                    .remove_file_chunks_scoped(&codebase_id, &file.relative_path)
                     .await
                 {
-                    tracing::warn!("Failed to store chunks for {}: {e}", file.relative_path);
-                    errors += 1;
-                    continue;
+                    tracing::warn!("Failed to clean old chunks for {}: {e}", file.relative_path);
                 }
-                total_chunks += chunks.len();
-                total_files += 1;
-            }
-            Err(e) => {
-                tracing::warn!("Failed to embed chunks for {}: {e}", file.relative_path);
-                errors += 1;
-            }
-        }
 
-        progress.finish_file(&file.relative_path, chunks.len());
-    }
+                let texts: Vec<String> = chunks
+                    .iter()
+                    .map(crate::embedding::chunk_embedding_text)
+                    .collect();
+
+                let engine_clone = engine.clone();
+                let embeddings_result = tokio::task::spawn_blocking(move || {
+                    let text_refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+                    engine_clone.embed_batch(&text_refs)
+                })
+                .await;
+
+                match embeddings_result {
+                    Ok(Ok(embeddings)) => {
+                        let mtime = discovery::get_file_mtime(&file.path).unwrap_or_default();
+                        let mtimes = vec![mtime; chunks.len()];
+
+                        if let Err(e) = storage
+                            .store_chunks_batch(&chunks, &embeddings, Some(&mtimes))
+                            .await
+                        {
+                            tracing::warn!("Failed to store chunks for {}: {e}", file.relative_path);
+                            errors.fetch_add(1, Ordering::SeqCst);
+                        } else {
+                            total_chunks.fetch_add(chunks.len(), Ordering::SeqCst);
+                            total_files.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!("Failed to embed chunks for {}: {e}", file.relative_path);
+                        errors.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Task join error during embedding: {e}");
+                        errors.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+
+                {
+                    let mut p = progress.lock().await;
+                    p.finish_file(&file.relative_path, chunks.len());
+                }
+            }
+        })
+        .await;
 
     Ok(SyncStats {
-        total_files,
-        total_chunks,
-        errors,
+        total_files: total_files.load(Ordering::SeqCst),
+        total_chunks: total_chunks.load(Ordering::SeqCst),
+        errors: errors.load(Ordering::SeqCst),
     })
 }
 

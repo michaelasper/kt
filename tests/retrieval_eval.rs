@@ -40,14 +40,15 @@ pub fn calculate_invoice_total(line_items: &[u64]) -> u64 {
     let config = Config::from_env();
     let storage = Storage::new(&config)?;
     storage.ensure_index().await?;
-    let engine = EmbeddingEngine::new(&config).await?;
+    let engine = std::sync::Arc::new(EmbeddingEngine::new(&config).await?);
 
     let codebase = storage.register_codebase(temp.path(), None).await?;
     let plan = sync::plan(temp.path(), &storage, &codebase, true).await?;
-    let mut progress = sync::NoopProgress;
-    let stats = sync::execute(&plan, &codebase, &storage, &engine, &mut progress).await?;
+    let strategy = plan.strategy.clone();
+    let progress = std::sync::Arc::new(tokio::sync::Mutex::new(sync::NoopProgress));
+    let stats = sync::execute(plan, &codebase, &storage, engine.clone(), progress).await?;
     assert_eq!(stats.errors, 0);
-    sync::finalize(temp.path(), &codebase, &plan.strategy, &storage).await?;
+    sync::finalize(temp.path(), &codebase, &strategy, &storage).await?;
 
     let query = "how does auth work";
     let query_embedding = engine.embed(query)?;

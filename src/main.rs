@@ -1,10 +1,10 @@
 use clap::{Parser, Subcommand};
 use kt::global_config::GlobalConfigManager;
 use kt::mcp_setup::HarnessType;
-use kt::sync::SyncProgress;
 use kt::upgrade::Upgrader;
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
@@ -129,7 +129,7 @@ impl kt::sync::SyncProgress for CliProgress {
         self.ui.finish_file(path, chunks);
     }
 
-    fn finish(self, files: usize, chunks: usize) {
+    fn finish(&mut self, files: usize, chunks: usize) {
         self.ui.finish(files, chunks);
     }
 }
@@ -167,7 +167,7 @@ async fn run_sync(
     storage.ensure_index().await?;
     let codebase = storage.register_codebase(directory, codebase_alias).await?;
 
-    let engine = kt::embedding::EmbeddingEngine::new(config).await?;
+    let engine = Arc::new(kt::embedding::EmbeddingEngine::new(config).await?);
 
     let discovery_options = config.discovery_options();
     let plan =
@@ -179,14 +179,20 @@ async fn run_sync(
         return Ok(());
     }
 
-    let mut progress = CliProgress {
-        ui: kt::sync_ui::SyncUI::new(plan.files.len()),
-    };
+    let total_files = plan.files.len();
+    let progress: Arc<tokio::sync::Mutex<dyn kt::sync::SyncProgress>> =
+        Arc::new(tokio::sync::Mutex::new(CliProgress {
+            ui: kt::sync_ui::SyncUI::new(total_files),
+        }));
 
-    let stats = kt::sync::execute(&plan, &codebase, &storage, &engine, &mut progress).await?;
-    kt::sync::finalize(directory, &codebase, &plan.strategy, &storage).await?;
+    let strategy = plan.strategy.clone();
+    let stats = kt::sync::execute(plan, &codebase, &storage, engine, progress.clone()).await?;
+    kt::sync::finalize(directory, &codebase, &strategy, &storage).await?;
 
-    progress.finish(stats.total_files, stats.total_chunks);
+    {
+        let mut p = progress.lock().await;
+        p.finish(stats.total_files, stats.total_chunks);
+    }
 
     Ok(())
 }
