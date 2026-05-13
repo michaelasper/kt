@@ -66,33 +66,29 @@ pub struct DiscoveredFile {
     pub language: Language,
 }
 
-pub async fn discover_files_async(root: PathBuf) -> Vec<DiscoveredFile> {
-    tokio::task::spawn_blocking(move || discover_files(&root))
-        .await
-        .unwrap_or_default()
+pub async fn discover_files_async(root: PathBuf) -> crate::error::Result<Vec<DiscoveredFile>> {
+    tokio::task::spawn_blocking(move || discover_files(&root)).await?
 }
 
 pub async fn discover_files_with_options_async(
     root: PathBuf,
     options: DiscoveryOptions,
-) -> Vec<DiscoveredFile> {
-    tokio::task::spawn_blocking(move || discover_files_with_options(&root, &options))
-        .await
-        .unwrap_or_default()
+) -> crate::error::Result<Vec<DiscoveredFile>> {
+    tokio::task::spawn_blocking(move || discover_files_with_options(&root, &options)).await?
 }
 
-pub fn discover_files(root: &Path) -> Vec<DiscoveredFile> {
+pub fn discover_files(root: &Path) -> crate::error::Result<Vec<DiscoveredFile>> {
     discover_files_with_options(root, &DiscoveryOptions::default())
 }
 
-pub fn discover_files_with_options(root: &Path, options: &DiscoveryOptions) -> Vec<DiscoveredFile> {
-    let root = match root.canonicalize() {
-        Ok(p) => p,
-        Err(_) => return Vec::new(),
-    };
+pub fn discover_files_with_options(
+    root: &Path,
+    options: &DiscoveryOptions,
+) -> crate::error::Result<Vec<DiscoveredFile>> {
+    let root = root.canonicalize()?;
     let gitignore = GitIgnoreFilter::new(&root);
 
-    WalkDir::new(&root)
+    Ok(WalkDir::new(&root)
         .into_iter()
         .filter_entry(|entry| {
             if gitignore
@@ -136,34 +132,31 @@ pub fn discover_files_with_options(root: &Path, options: &DiscoveryOptions) -> V
                 language,
             })
         })
-        .collect()
+        .collect())
 }
 
 pub async fn discover_modified_files_async(
     root: PathBuf,
     known_mtimes: std::collections::HashMap<String, String>,
-) -> Vec<DiscoveredFile> {
-    tokio::task::spawn_blocking(move || discover_modified_files(&root, &known_mtimes))
-        .await
-        .unwrap_or_default()
+) -> crate::error::Result<Vec<DiscoveredFile>> {
+    tokio::task::spawn_blocking(move || discover_modified_files(&root, &known_mtimes)).await?
 }
 
 pub async fn discover_modified_files_with_options_async(
     root: PathBuf,
     known_mtimes: std::collections::HashMap<String, String>,
     options: DiscoveryOptions,
-) -> Vec<DiscoveredFile> {
+) -> crate::error::Result<Vec<DiscoveredFile>> {
     tokio::task::spawn_blocking(move || {
         discover_modified_files_with_options(&root, &known_mtimes, &options)
     })
-    .await
-    .unwrap_or_default()
+    .await?
 }
 
 pub fn discover_modified_files(
     root: &Path,
     known_mtimes: &std::collections::HashMap<String, String>,
-) -> Vec<DiscoveredFile> {
+) -> crate::error::Result<Vec<DiscoveredFile>> {
     discover_modified_files_with_options(root, known_mtimes, &DiscoveryOptions::default())
 }
 
@@ -171,9 +164,9 @@ pub fn discover_modified_files_with_options(
     root: &Path,
     known_mtimes: &std::collections::HashMap<String, String>,
     options: &DiscoveryOptions,
-) -> Vec<DiscoveredFile> {
-    let all_files = discover_files_with_options(root, options);
-    all_files
+) -> crate::error::Result<Vec<DiscoveredFile>> {
+    let all_files = discover_files_with_options(root, options)?;
+    Ok(all_files
         .into_iter()
         .filter(|f| {
             let known_mtime = known_mtimes.get(&f.relative_path);
@@ -185,7 +178,7 @@ pub fn discover_modified_files_with_options(
                 }
             }
         })
-        .collect()
+        .collect())
 }
 
 pub fn get_file_mtime(path: &Path) -> Option<String> {
@@ -271,7 +264,7 @@ mod tests {
         std::fs::write(generated_dir.join("ignored.rs"), "fn ignored() {}\n").unwrap();
 
         let options = DiscoveryOptions::new(vec!["generated".to_string()]);
-        let files = discover_files_with_options(temp.path(), &options);
+        let files = discover_files_with_options(temp.path(), &options).unwrap();
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].relative_path, "src/lib.rs");
@@ -289,9 +282,16 @@ mod tests {
         std::fs::write(src_dir.join("lib.rs"), "fn kept() {}\n").unwrap();
         std::fs::write(ignored_dir.join("generated.rs"), "fn ignored() {}\n").unwrap();
 
-        let files = discover_files(temp.path());
+        let files = discover_files(temp.path()).unwrap();
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].relative_path, "src/lib.rs");
+    }
+
+    #[test]
+    fn discover_files_returns_error_for_non_existent_path() {
+        let path = Path::new("/non/existent/path/that/should/never/exist/on/this/machine");
+        let result = discover_files(path);
+        assert!(result.is_err());
     }
 }

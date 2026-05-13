@@ -83,7 +83,7 @@ pub async fn plan_with_options(
                 root_buf.clone(),
                 discovery_options.clone(),
             )
-            .await,
+            .await?,
             strategy: SyncStrategy::Full,
             deleted_paths: Vec::new(),
         }
@@ -106,7 +106,7 @@ pub async fn plan_with_options(
                     known_mtimes,
                     discovery_options.clone(),
                 )
-                .await,
+                .await?,
                 strategy: SyncStrategy::PartialMtime,
                 deleted_paths: Vec::new(),
             }
@@ -139,7 +139,7 @@ async fn plan_git_aware(
                     root_buf,
                     discovery_options.clone(),
                 )
-                .await,
+                .await?,
                 strategy: SyncStrategy::Full,
                 deleted_paths: Vec::new(),
             });
@@ -158,7 +158,7 @@ async fn plan_git_aware(
                     root_buf,
                     discovery_options.clone(),
                 )
-                .await,
+                .await?,
                 strategy: SyncStrategy::Full,
                 deleted_paths: Vec::new(),
             })
@@ -199,7 +199,7 @@ async fn plan_git_aware(
 
             let all_files =
                 discovery::discover_files_with_options_async(root_buf, discovery_options.clone())
-                    .await;
+                    .await?;
             let changed_files: Vec<_> = all_files
                 .into_iter()
                 .filter(|f| changed_set.contains(&f.relative_path))

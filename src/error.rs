@@ -28,6 +28,9 @@ pub enum KtError {
 
     #[error("Parse error for {path}: {reason}")]
     ParseFailed { path: String, reason: String },
+
+    #[error("Background task panicked or was cancelled: {0}")]
+    Join(#[from] tokio::task::JoinError),
 }
 
 pub type Result<T> = std::result::Result<T, KtError>;
