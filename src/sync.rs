@@ -62,25 +62,45 @@ pub async fn plan_with_options(
     full: bool,
     discovery_options: &DiscoveryOptions,
 ) -> anyhow::Result<SyncPlan> {
+    let root_buf = root.to_path_buf();
     if full {
         tracing::info!("Full sync requested (--full flag)");
         return Ok(SyncPlan {
-            files: discovery::discover_files_with_options(root, discovery_options),
+            files: discovery::discover_files_with_options_async(
+                root_buf,
+                discovery_options.clone(),
+            )
+            .await,
             strategy: SyncStrategy::Full,
             deleted_paths: Vec::new(),
         });
     }
 
-    if git2::Repository::discover(root).is_ok() {
+    let is_git = {
+        let root_buf = root_buf.clone();
+        tokio::task::spawn_blocking(move || git2::Repository::discover(&root_buf).is_ok())
+            .await
+            .unwrap_or(false)
+    };
+
+    if is_git {
         tracing::info!("Git repository detected, using git-aware partial sync");
 
-        let git_info = git::get_git_info(root)?;
+        let git_info = {
+            let root_buf = root_buf.clone();
+            tokio::task::spawn_blocking(move || git::get_git_info(&root_buf)).await??
+        };
+
         let current_commit = match git_info.commit_sha {
             Some(sha) => sha,
             None => {
                 tracing::warn!("No commit SHA found (detached HEAD?), falling back to full sync");
                 return Ok(SyncPlan {
-                    files: discovery::discover_files_with_options(root, discovery_options),
+                    files: discovery::discover_files_with_options_async(
+                        root_buf,
+                        discovery_options.clone(),
+                    )
+                    .await,
                     strategy: SyncStrategy::Full,
                     deleted_paths: Vec::new(),
                 });
@@ -95,7 +115,11 @@ pub async fn plan_with_options(
             None => {
                 tracing::info!("No previous sync found, performing full sync");
                 Ok(SyncPlan {
-                    files: discovery::discover_files_with_options(root, discovery_options),
+                    files: discovery::discover_files_with_options_async(
+                        root_buf,
+                        discovery_options.clone(),
+                    )
+                    .await,
                     strategy: SyncStrategy::Full,
                     deleted_paths: Vec::new(),
                 })
@@ -118,49 +142,47 @@ pub async fn plan_with_options(
                     &current_commit[..8]
                 );
 
-                match git::get_diff_files(root, &last) {
-                    Ok(changed_paths) => {
-                        let mut deleted_paths = Vec::new();
-                        for path in &changed_paths {
-                            if !root.join(path).exists() {
-                                tracing::info!("Deleted file detected: {}", path);
-                                deleted_paths.push(path.clone());
-                            }
-                        }
+                let changed_paths = {
+                    let root_buf = root_buf.clone();
+                    let last = last.clone();
+                    tokio::task::spawn_blocking(move || git::get_diff_files(&root_buf, &last))
+                        .await??
+                };
 
-                        let changed_set: HashSet<_> = changed_paths.into_iter().collect();
-
-                        let all_files =
-                            discovery::discover_files_with_options(root, discovery_options);
-                        let changed_files: Vec<_> = all_files
-                            .into_iter()
-                            .filter(|f| changed_set.contains(&f.relative_path))
-                            .collect();
-
-                        if changed_files.is_empty() {
-                            tracing::info!("No supported files in changed set");
-                        } else {
-                            tracing::info!("Found {} changed files to index", changed_files.len());
-                        }
-
-                        Ok(SyncPlan {
-                            files: changed_files,
-                            strategy: SyncStrategy::PartialGit {
-                                prev_commit: last,
-                                current_commit,
-                            },
-                            deleted_paths,
-                        })
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to compute diff ({e}), falling back to full sync");
-                        Ok(SyncPlan {
-                            files: discovery::discover_files_with_options(root, discovery_options),
-                            strategy: SyncStrategy::Full,
-                            deleted_paths: Vec::new(),
-                        })
+                let mut deleted_paths = Vec::new();
+                for path in &changed_paths {
+                    if !root.join(path).exists() {
+                        tracing::info!("Deleted file detected: {}", path);
+                        deleted_paths.push(path.clone());
                     }
                 }
+
+                let changed_set: HashSet<_> = changed_paths.into_iter().collect();
+
+                let all_files = discovery::discover_files_with_options_async(
+                    root_buf,
+                    discovery_options.clone(),
+                )
+                .await;
+                let changed_files: Vec<_> = all_files
+                    .into_iter()
+                    .filter(|f| changed_set.contains(&f.relative_path))
+                    .collect();
+
+                if changed_files.is_empty() {
+                    tracing::info!("No supported files in changed set");
+                } else {
+                    tracing::info!("Found {} changed files to index", changed_files.len());
+                }
+
+                Ok(SyncPlan {
+                    files: changed_files,
+                    strategy: SyncStrategy::PartialGit {
+                        prev_commit: last,
+                        current_commit,
+                    },
+                    deleted_paths,
+                })
             }
         }
     } else {
@@ -168,16 +190,18 @@ pub async fn plan_with_options(
 
         let known_mtimes = storage.get_file_mtimes(Some(&codebase.codebase_id)).await?;
         Ok(SyncPlan {
-            files: discovery::discover_modified_files_with_options(
-                root,
-                &known_mtimes,
-                discovery_options,
-            ),
+            files: discovery::discover_modified_files_with_options_async(
+                root_buf,
+                known_mtimes,
+                discovery_options.clone(),
+            )
+            .await,
             strategy: SyncStrategy::PartialMtime,
             deleted_paths: Vec::new(),
         })
     }
 }
+
 
 pub async fn execute(
     plan: SyncPlan,
@@ -254,15 +278,17 @@ pub async fn execute(
                     .collect();
 
                 let engine_clone = engine.clone();
-                let embeddings_result = tokio::task::spawn_blocking(move || {
+                let file_path = file.path.clone();
+                let result = tokio::task::spawn_blocking(move || {
                     let text_refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-                    engine_clone.embed_batch(&text_refs)
+                    let embeddings = engine_clone.embed_batch(&text_refs)?;
+                    let mtime = discovery::get_file_mtime(&file_path).unwrap_or_default();
+                    Ok::<(Vec<Vec<f32>>, String), anyhow::Error>((embeddings, mtime))
                 })
                 .await;
 
-                match embeddings_result {
-                    Ok(Ok(embeddings)) => {
-                        let mtime = discovery::get_file_mtime(&file.path).unwrap_or_default();
+                match result {
+                    Ok(Ok((embeddings, mtime))) => {
                         let mtimes = vec![mtime; chunks.len()];
 
                         if let Err(e) = storage
@@ -277,11 +303,11 @@ pub async fn execute(
                         }
                     }
                     Ok(Err(e)) => {
-                        tracing::warn!("Failed to embed chunks for {}: {e}", file.relative_path);
+                        tracing::warn!("Failed to process chunks for {}: {e}", file.relative_path);
                         errors.fetch_add(1, Ordering::SeqCst);
                     }
                     Err(e) => {
-                        tracing::warn!("Task join error during embedding: {e}");
+                        tracing::warn!("Task join error during processing: {e}");
                         errors.fetch_add(1, Ordering::SeqCst);
                     }
                 }
@@ -307,11 +333,13 @@ pub async fn finalize(
     strategy: &SyncStrategy,
     storage: &Storage,
 ) -> anyhow::Result<()> {
+    let root_buf = root.to_path_buf();
     match strategy {
         SyncStrategy::Full => {
-            let commit = git::get_git_info(root)
-                .ok()
-                .and_then(|info| info.commit_sha);
+            let commit = tokio::task::spawn_blocking(move || {
+                git::get_git_info(&root_buf).ok().and_then(|info| info.commit_sha)
+            })
+            .await?;
             storage
                 .mark_codebase_indexed(&codebase.codebase_id, commit.as_deref())
                 .await?;
@@ -323,9 +351,10 @@ pub async fn finalize(
             }
         }
         SyncStrategy::PartialGit { .. } => {
-            let commit = git::get_git_info(root)
-                .ok()
-                .and_then(|info| info.commit_sha);
+            let commit = tokio::task::spawn_blocking(move || {
+                git::get_git_info(&root_buf).ok().and_then(|info| info.commit_sha)
+            })
+            .await?;
             storage
                 .mark_codebase_indexed(&codebase.codebase_id, commit.as_deref())
                 .await?;

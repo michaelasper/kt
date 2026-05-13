@@ -352,8 +352,11 @@ impl KtServer {
         &self,
         Parameters(params): Parameters<GitStatusParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let root = std::path::Path::new(&params.directory_path);
-        let git_info = git::get_git_info(root).map_err(mcp_error)?;
+        let root = std::path::PathBuf::from(&params.directory_path);
+        let git_info = tokio::task::spawn_blocking(move || git::get_git_info(&root))
+            .await
+            .map_err(mcp_error)?
+            .map_err(mcp_error)?;
 
         let branch = git_info.branch.unwrap_or_else(|| "detached".to_string());
         let commit_sha = git_info.commit_sha.unwrap_or_else(|| "unknown".to_string());
@@ -402,10 +405,17 @@ impl KtServer {
             .map_err(mcp_error)?;
         storage.ensure_shadow_index().await.map_err(mcp_error)?;
 
-        let base_ref = params.base_branch.as_deref().unwrap_or("main");
+        let base_ref = params.base_branch.as_deref().unwrap_or("main").to_string();
         let ttl_seconds = params.ttl_seconds.unwrap_or(7200);
 
-        let changed_files = git::get_worktree_diff_files(root, base_ref).map_err(mcp_error)?;
+        let root_buf = root.to_path_buf();
+        let base_ref_clone = base_ref.clone();
+        let changed_files = tokio::task::spawn_blocking(move || {
+            git::get_worktree_diff_files(&root_buf, &base_ref_clone)
+        })
+        .await
+        .map_err(mcp_error)?
+        .map_err(mcp_error)?;
 
         if changed_files.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(

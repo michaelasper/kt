@@ -66,6 +66,21 @@ pub struct DiscoveredFile {
     pub language: Language,
 }
 
+pub async fn discover_files_async(root: PathBuf) -> Vec<DiscoveredFile> {
+    tokio::task::spawn_blocking(move || discover_files(&root))
+        .await
+        .unwrap_or_default()
+}
+
+pub async fn discover_files_with_options_async(
+    root: PathBuf,
+    options: DiscoveryOptions,
+) -> Vec<DiscoveredFile> {
+    tokio::task::spawn_blocking(move || discover_files_with_options(&root, &options))
+        .await
+        .unwrap_or_default()
+}
+
 pub fn discover_files(root: &Path) -> Vec<DiscoveredFile> {
     discover_files_with_options(root, &DiscoveryOptions::default())
 }
@@ -122,6 +137,27 @@ pub fn discover_files_with_options(root: &Path, options: &DiscoveryOptions) -> V
             })
         })
         .collect()
+}
+
+pub async fn discover_modified_files_async(
+    root: PathBuf,
+    known_mtimes: std::collections::HashMap<String, String>,
+) -> Vec<DiscoveredFile> {
+    tokio::task::spawn_blocking(move || discover_modified_files(&root, &known_mtimes))
+        .await
+        .unwrap_or_default()
+}
+
+pub async fn discover_modified_files_with_options_async(
+    root: PathBuf,
+    known_mtimes: std::collections::HashMap<String, String>,
+    options: DiscoveryOptions,
+) -> Vec<DiscoveredFile> {
+    tokio::task::spawn_blocking(move || {
+        discover_modified_files_with_options(&root, &known_mtimes, &options)
+    })
+    .await
+    .unwrap_or_default()
 }
 
 pub fn discover_modified_files(
