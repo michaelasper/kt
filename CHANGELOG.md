@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.7.3 (2026-05-13)</small>
+
+* fix: propagate discovery errors and finalize async migration ([615ab92](https://github.com/michaelasper/kt/commit/615ab92)), closes [#10](https://github.com/michaelasper/kt/issues/10) [#31](https://github.com/michaelasper/kt/issues/31) [#10](https://github.com/michaelasper/kt/issues/10) [#31](https://github.com/michaelasper/kt/issues/31)
+
 ## <small>0.7.2 (2026-05-13)</small>
 
 * perf: offload ONNX inference and tokenization to blocking tokio task ([7a128bd](https://github.com/michaelasper/kt/commit/7a128bd)), closes [#9](https://github.com/michaelasper/kt/issues/9)
