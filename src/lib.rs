@@ -16,6 +16,7 @@ pub mod storage;
 pub mod sync;
 pub mod sync_ui;
 pub mod upgrade;
+pub mod util;
 
 pub use codebase::Codebase;
 pub use config::Config;

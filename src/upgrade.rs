@@ -50,6 +50,8 @@ pub enum UpgradeError {
     AlreadyUpToDate,
     #[error("User cancelled")]
     Cancelled,
+    #[error("SHA256 checksum mismatch: expected {expected}, got {actual}")]
+    ChecksumMismatch { expected: String, actual: String },
 }
 
 impl Upgrader {
@@ -185,6 +187,7 @@ impl Upgrader {
         }
 
         let asset = self.find_suitable_asset(&release.assets)?;
+        let release_assets = &release.assets;
 
         println!(
             "{} Downloading: {} ({})",
@@ -193,7 +196,7 @@ impl Upgrader {
             style(format_size(asset.size)).dim()
         );
 
-        let binary_path = self.download_binary(asset).await?;
+        let binary_path = self.download_binary(asset, release_assets).await?;
 
         println!(
             "{} {}",
@@ -255,6 +258,15 @@ impl Upgrader {
             .ok_or_else(|| UpgradeError::NoBinaryFound)?)
     }
 
+    fn find_checksum_asset<'a>(
+        &self,
+        binary_name: &str,
+        assets: &'a [GitHubAsset],
+    ) -> Option<&'a GitHubAsset> {
+        let checksum_name = format!("{binary_name}.sha256");
+        assets.iter().find(|a| a.name == checksum_name)
+    }
+
     fn detect_platform(&self) -> (&'static str, &'static str) {
         let os = match std::env::consts::OS {
             "macos" => "darwin",
@@ -271,7 +283,11 @@ impl Upgrader {
         (os, arch)
     }
 
-    async fn download_binary(&self, asset: &GitHubAsset) -> Result<PathBuf> {
+    async fn download_binary(
+        &self,
+        asset: &GitHubAsset,
+        release_assets: &[GitHubAsset],
+    ) -> Result<PathBuf> {
         let pb = ProgressBar::new(asset.size);
         pb.set_style(ProgressStyle::default_bar()
             .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
@@ -289,12 +305,46 @@ impl Upgrader {
         let total_bytes = response.content_length().unwrap_or(asset.size);
         pb.set_length(total_bytes);
 
+        let bytes = response.bytes().await?;
+
+        if let Some(checksum_asset) = self.find_checksum_asset(&asset.name, release_assets) {
+            debug!("Found checksum asset: {}", checksum_asset.name);
+            let checksum_response = self
+                .client
+                .get(&checksum_asset.browser_download_url)
+                .send()
+                .await?;
+            if !checksum_response.status().is_success() {
+                return Err(UpgradeError::GitHubApi(format!(
+                    "Failed to fetch checksum: status {}",
+                    checksum_response.status()
+                ))
+                .into());
+            }
+            let checksum_text = checksum_response.text().await?;
+            let expected = checksum_text.split_whitespace().next().unwrap_or("").trim();
+            let actual = crate::util::sha256_digest(&bytes);
+            if actual != expected {
+                return Err(UpgradeError::ChecksumMismatch {
+                    expected: expected.to_string(),
+                    actual,
+                }
+                .into());
+            }
+            info!("SHA256 checksum verified for {}", asset.name);
+        } else {
+            eprintln!(
+                "{} WARNING: Binary downloaded without SHA256 checksum verification.",
+                style("⚠").yellow()
+            );
+            eprintln!("  Publish .sha256 files with releases to enable verification.");
+        }
+
         let tmp_dir = std::env::temp_dir();
         let download_path = tmp_dir.join(&asset.name);
 
         let mut file = fs::File::create(&download_path)?;
         let mut downloaded = 0u64;
-        let bytes = response.bytes().await?;
 
         let chunk_size = 8192;
         for chunk in bytes.chunks(chunk_size) {
@@ -314,12 +364,6 @@ impl Upgrader {
         }
 
         pb.finish_with_message("Downloaded");
-
-        eprintln!(
-            "{} WARNING: Binary downloaded without SHA256 checksum verification.",
-            style("⚠").yellow()
-        );
-        eprintln!("  For production use, publish .sha256sum files with releases and verify before installation.");
 
         Ok(download_path)
     }

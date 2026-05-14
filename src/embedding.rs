@@ -1,7 +1,6 @@
 use crate::{Chunk, Config, KtError};
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Tensor;
-use sha2::{Digest, Sha256};
 use std::path::Path;
 use tokenizers::Tokenizer;
 use tracing::{debug, info};
@@ -284,10 +283,7 @@ async fn download_file(url: &str, path: &Path, expected_sha256: &str) -> anyhow:
 
 fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
     let contents = std::fs::read(path)?;
-    let mut hasher = Sha256::new();
-    hasher.update(&contents);
-    let result = hasher.finalize();
-    let hex = format!("{:x}", result);
+    let hex = crate::util::sha256_digest(&contents);
 
     if hex != expected {
         return Err(anyhow::anyhow!(
