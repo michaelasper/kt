@@ -776,9 +776,9 @@ mod tests {
                 Value::BulkString(b"chunk_id".to_vec()),
                 Value::BulkString(b"chunk1".to_vec()),
                 Value::BulkString(b"filepath".to_vec()),
-                Value::BulkString(b"src/main.py".to_vec()),
+                Value::BulkString(b"src/main.ts".to_vec()),
                 Value::BulkString(b"language".to_vec()),
-                Value::BulkString(b"python".to_vec()),
+                Value::BulkString(b"typescript".to_vec()),
             ]),
         ]);
 
@@ -787,7 +787,7 @@ mod tests {
         assert!(result.is_err());
         let error = result.unwrap_err().to_string();
         assert!(error.contains("Unknown language"));
-        assert!(error.contains("python"));
+        assert!(error.contains("typescript"));
     }
 
     #[test]

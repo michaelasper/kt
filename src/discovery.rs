@@ -289,6 +289,42 @@ mod tests {
     }
 
     #[test]
+    fn discover_files_includes_all_supported_languages() {
+        let temp = tempfile::tempdir().unwrap();
+        let files = [
+            ("src/lib.rs", Language::Rust),
+            ("cmd/main.go", Language::Go),
+            ("app/Main.java", Language::Java),
+            ("scripts/tool.py", Language::Python),
+            ("ios/App.swift", Language::Swift),
+            ("ios/AppDelegate.m", Language::ObjectiveC),
+            ("ios/AppDelegate.h", Language::ObjectiveC),
+            ("docs/README.md", Language::Markdown),
+            ("docs/guide.mdx", Language::Markdown),
+            ("web/index.html", Language::Html),
+            ("web/legacy.htm", Language::Html),
+        ];
+
+        for (relative_path, _) in files {
+            let path = temp.path().join(relative_path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "content\n").unwrap();
+        }
+
+        let mut discovered = discover_files(temp.path()).unwrap();
+        discovered.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+
+        assert_eq!(discovered.len(), files.len());
+        for (relative_path, language) in files {
+            let file = discovered
+                .iter()
+                .find(|file| file.relative_path == relative_path)
+                .unwrap_or_else(|| panic!("missing {relative_path}"));
+            assert_eq!(file.language, language, "{relative_path}");
+        }
+    }
+
+    #[test]
     fn discover_files_returns_error_for_non_existent_path() {
         let path = Path::new("/non/existent/path/that/should/never/exist/on/this/machine");
         let result = discover_files(path);

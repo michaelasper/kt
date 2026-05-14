@@ -31,30 +31,40 @@ pub enum Language {
     Rust,
     Go,
     Java,
+    Python,
+    Swift,
+    #[serde(rename = "objective-c")]
+    ObjectiveC,
+    Markdown,
+    Html,
 }
 
 impl Language {
+    pub const ALL: &'static [Self] = &[
+        Self::Rust,
+        Self::Go,
+        Self::Java,
+        Self::Python,
+        Self::Swift,
+        Self::ObjectiveC,
+        Self::Markdown,
+        Self::Html,
+    ];
+
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
-        if s.eq_ignore_ascii_case("rust") || s.eq_ignore_ascii_case("rs") {
-            Some(Self::Rust)
-        } else if s.eq_ignore_ascii_case("go") || s.eq_ignore_ascii_case("golang") {
-            Some(Self::Go)
-        } else if s.eq_ignore_ascii_case("java") {
-            Some(Self::Java)
-        } else {
-            None
-        }
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|language| language.matches_name(s))
     }
 
     pub fn from_extension(ext: &str) -> Option<Self> {
-        let ext = ext.trim_start_matches('.');
-        match ext {
-            "rs" => Some(Self::Rust),
-            "go" => Some(Self::Go),
-            "java" => Some(Self::Java),
-            _ => None,
-        }
+        let ext = ext.trim_start_matches('.').to_ascii_lowercase();
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|language| language.extensions().contains(&ext.as_str()))
     }
 
     pub fn as_str(&self) -> &'static str {
@@ -62,7 +72,51 @@ impl Language {
             Self::Rust => "rust",
             Self::Go => "go",
             Self::Java => "java",
+            Self::Python => "python",
+            Self::Swift => "swift",
+            Self::ObjectiveC => "objective-c",
+            Self::Markdown => "markdown",
+            Self::Html => "html",
         }
+    }
+
+    pub fn aliases(&self) -> &'static [&'static str] {
+        match self {
+            Self::Rust => &["rust", "rs"],
+            Self::Go => &["go", "golang"],
+            Self::Java => &["java"],
+            Self::Python => &["python", "py", "py3"],
+            Self::Swift => &["swift"],
+            Self::ObjectiveC => &[
+                "objective-c",
+                "objectivec",
+                "objective c",
+                "objc",
+                "obj-c",
+                "obj c",
+            ],
+            Self::Markdown => &["markdown", "md", "mdx"],
+            Self::Html => &["html", "htm", "xhtml"],
+        }
+    }
+
+    pub fn extensions(&self) -> &'static [&'static str] {
+        match self {
+            Self::Rust => &["rs"],
+            Self::Go => &["go"],
+            Self::Java => &["java"],
+            Self::Python => &["py", "pyw"],
+            Self::Swift => &["swift"],
+            Self::ObjectiveC => &["m", "mm", "h"],
+            Self::Markdown => &["md", "markdown", "mdx"],
+            Self::Html => &["html", "htm", "xhtml"],
+        }
+    }
+
+    fn matches_name(&self, name: &str) -> bool {
+        self.aliases()
+            .iter()
+            .any(|alias| alias.eq_ignore_ascii_case(name))
     }
 }
 
@@ -81,8 +135,13 @@ impl std::fmt::Display for ParseLanguageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Unknown language '{}' (expected rust, go, or java)",
-            self.input
+            "Unknown language '{}' (expected one of: {})",
+            self.input,
+            Language::ALL
+                .iter()
+                .map(Language::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     }
 }
@@ -214,13 +273,42 @@ mod tests {
         assert_eq!(Language::parse("GO"), Some(Language::Go));
         assert_eq!(Language::parse("golang"), Some(Language::Go));
         assert_eq!(Language::parse(" java "), Some(Language::Java));
+        assert_eq!(Language::parse("python"), Some(Language::Python));
+        assert_eq!(Language::parse("py"), Some(Language::Python));
+        assert_eq!(Language::parse("swift"), Some(Language::Swift));
+        assert_eq!(Language::parse("objective-c"), Some(Language::ObjectiveC));
+        assert_eq!(Language::parse("objc"), Some(Language::ObjectiveC));
+        assert_eq!(Language::parse("markdown"), Some(Language::Markdown));
+        assert_eq!(Language::parse("md"), Some(Language::Markdown));
+        assert_eq!(Language::parse("html"), Some(Language::Html));
+        assert_eq!(Language::parse("htm"), Some(Language::Html));
+    }
+
+    #[test]
+    fn language_from_extension_accepts_supported_source_and_document_files() {
+        assert_eq!(Language::from_extension(".rs"), Some(Language::Rust));
+        assert_eq!(Language::from_extension("MD"), Some(Language::Markdown));
+        assert_eq!(Language::from_extension("py"), Some(Language::Python));
+        assert_eq!(Language::from_extension("pyw"), Some(Language::Python));
+        assert_eq!(Language::from_extension("swift"), Some(Language::Swift));
+        assert_eq!(Language::from_extension("m"), Some(Language::ObjectiveC));
+        assert_eq!(Language::from_extension("mm"), Some(Language::ObjectiveC));
+        assert_eq!(Language::from_extension("h"), Some(Language::ObjectiveC));
+        assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
+        assert_eq!(
+            Language::from_extension("markdown"),
+            Some(Language::Markdown)
+        );
+        assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
+        assert_eq!(Language::from_extension("html"), Some(Language::Html));
+        assert_eq!(Language::from_extension("htm"), Some(Language::Html));
     }
 
     #[test]
     fn language_parse_rejects_unknown_names() {
-        let error = "python".parse::<Language>().unwrap_err();
+        let error = "typescript".parse::<Language>().unwrap_err();
 
-        assert_eq!(error.input(), "python");
+        assert_eq!(error.input(), "typescript");
         assert!(error.to_string().contains("Unknown language"));
     }
 
