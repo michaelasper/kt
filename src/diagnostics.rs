@@ -81,8 +81,12 @@ impl Diagnostics {
         Self { level, log_file }
     }
 
+    pub fn is_enabled(&self) -> bool {
+        self.level != DiagnosticsLevel::Off
+    }
+
     pub async fn emit(&self, event: DiagnosticEvent) {
-        if self.level == DiagnosticsLevel::Off {
+        if !self.is_enabled() {
             return;
         }
 

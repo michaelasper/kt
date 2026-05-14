@@ -112,6 +112,10 @@ impl KtServer {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, rmcp::ErrorData>>,
     {
+        if !self.inner.diagnostics.is_enabled() {
+            return f().await;
+        }
+
         let start = std::time::Instant::now();
         let result = f().await;
         let success = result.is_ok();

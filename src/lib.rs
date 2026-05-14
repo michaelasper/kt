@@ -1,3 +1,4 @@
+#[cfg(feature = "agentic-rag")]
 pub mod agent;
 pub mod codebase;
 pub mod config;
