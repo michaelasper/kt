@@ -305,6 +305,9 @@ fn extract_signature(node: Node, source: &str) -> String {
             | "enum_item"
             | "enum_declaration"
             | "trait_item"
+            | "mod_item"
+            | "union_item"
+            | "foreign_mod_item"
             | "interface_declaration"
             | "record_declaration"
             | "annotation_type_declaration"
@@ -401,6 +404,11 @@ fn normalize_node_type(kind: &str, text: &str) -> String {
         }
         "type_declaration" => "type".to_string(),
         "enum_item" | "enum_declaration" => "enum".to_string(),
+        "union_item" => "union".to_string(),
+        "mod_item" => "module".to_string(),
+        "macro_definition" => "macro".to_string(),
+        "static_item" => "static".to_string(),
+        "foreign_mod_item" => "extern".to_string(),
         "impl_item" => "impl".to_string(),
         "trait_item" => "trait".to_string(),
         "class_definition" => "class".to_string(),
@@ -846,6 +854,45 @@ impl Foo {
         assert!(impl_fn.content.contains("impl"));
         assert_eq!(impl_fn.node_type, "function");
         assert!(chunks.iter().all(|c| c.node_type != "impl"));
+    }
+
+    #[test]
+    fn test_parse_rust_macro_static_union_and_module_context() {
+        let source = r#"
+pub mod ffi {
+    pub static VERSION: &str = "1";
+
+    macro_rules! make_id {
+        ($value:expr) => {
+            $value
+        };
+    }
+
+    pub union Value {
+        int_value: i32,
+        float_value: f32,
+    }
+}
+"#;
+
+        let chunks = chunks_for(source, "ffi.rs", Language::Rust);
+
+        let module = find_chunk(&chunks, "ffi");
+        assert_eq!(module.node_type, "module");
+
+        let static_item = find_chunk(&chunks, "VERSION");
+        assert_eq!(static_item.node_type, "static");
+        assert!(static_item
+            .parent_context
+            .as_deref()
+            .unwrap()
+            .contains("mod ffi"));
+
+        let macro_definition = find_chunk(&chunks, "make_id");
+        assert_eq!(macro_definition.node_type, "macro");
+
+        let union_item = find_chunk(&chunks, "Value");
+        assert_eq!(union_item.node_type, "union");
     }
 
     #[test]
