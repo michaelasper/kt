@@ -6,6 +6,7 @@ use crate::{Chunk, Codebase, Config, Language, SearchResult};
 use redis::cmd;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 pub use search::parse_search_results;
@@ -13,7 +14,7 @@ pub use search::parse_search_results;
 #[derive(Debug, Clone)]
 pub struct Storage {
     client: redis::Client,
-    config: Config,
+    config: Arc<Config>,
 }
 
 impl Storage {
@@ -21,7 +22,7 @@ impl Storage {
         let client = redis::Client::open(config.redis_url.as_str())?;
         Ok(Self {
             client,
-            config: config.clone(),
+            config: Arc::new(config.clone()),
         })
     }
 
