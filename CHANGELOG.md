@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.8.3 (2026-05-14)</small>
+
+* perf: wrap Storage.config in Arc to avoid deep clone on every file during concurrent sync ([df0788f](https://github.com/michaelasper/kt/commit/df0788f))
+
 ## <small>0.8.2 (2026-05-14)</small>
 
 * fix: remove unused &self from find_checksum_asset, move checksum fetch before progress bar ([4565531](https://github.com/michaelasper/kt/commit/4565531))
