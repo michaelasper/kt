@@ -42,10 +42,8 @@ impl LanguageConfig {
                     "function_declaration",
                     "method_declaration",
                     "type_declaration",
-                    "interface_type",
-                    "struct_type",
                 ],
-                container_node_types: &["type_declaration", "source_file"],
+                container_node_types: &["type_declaration"],
                 ts_language: tree_sitter_go::LANGUAGE,
             },
             Language::Java => Self {

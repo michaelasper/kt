@@ -870,6 +870,7 @@ func (r *MemoryRepository) Find(id string) (User, error) {
         let method = find_chunk(&chunks, "Find");
         assert_eq!(method.node_type, "function");
         assert!(method.signature.contains("MemoryRepository"));
+        assert_eq!(method.parent_context, None);
     }
 
     #[test]
