@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.9.0 (2026-05-14)
+
+* feat(indexing): add python swift objc markdown html parsers ([189d83a](https://github.com/michaelasper/kt/commit/189d83a))
+* feat(indexing): expand rust item extraction ([2c7313d](https://github.com/michaelasper/kt/commit/2c7313d))
+* docs: jot mcp improvement notes ([0f3d75b](https://github.com/michaelasper/kt/commit/0f3d75b))
+* fix(indexing): avoid leaking go file context ([2f816a6](https://github.com/michaelasper/kt/commit/2f816a6))
+
 ## <small>0.8.3 (2026-05-14)</small>
 
 * perf: wrap Storage.config in Arc to avoid deep clone on every file during concurrent sync ([df0788f](https://github.com/michaelasper/kt/commit/df0788f))
