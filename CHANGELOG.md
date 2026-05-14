@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.8.1 (2026-05-14)</small>
+
+* fix: gate dead agent module behind feature flag and skip diagnostics overhead when disabled ([736bb05](https://github.com/michaelasper/kt/commit/736bb05))
+
 ## 0.8.0 (2026-05-13)
 
 * style(sync): format sync UI changes ([0ccb0b4](https://github.com/michaelasper/kt/commit/0ccb0b4))
