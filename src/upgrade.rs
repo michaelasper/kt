@@ -259,7 +259,6 @@ impl Upgrader {
     }
 
     fn find_checksum_asset<'a>(
-        &self,
         binary_name: &str,
         assets: &'a [GitHubAsset],
     ) -> Option<&'a GitHubAsset> {
@@ -288,6 +287,17 @@ impl Upgrader {
         asset: &GitHubAsset,
         release_assets: &[GitHubAsset],
     ) -> Result<PathBuf> {
+        let expected_sha256 = match Self::find_checksum_asset(&asset.name, release_assets) {
+            Some(checksum_asset) => {
+                debug!("Fetching checksum: {}", checksum_asset.name);
+                Some(
+                    self.fetch_checksum(&checksum_asset.browser_download_url)
+                        .await?,
+                )
+            }
+            None => None,
+        };
+
         let pb = ProgressBar::new(asset.size);
         pb.set_style(ProgressStyle::default_bar()
             .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
@@ -307,26 +317,11 @@ impl Upgrader {
 
         let bytes = response.bytes().await?;
 
-        if let Some(checksum_asset) = self.find_checksum_asset(&asset.name, release_assets) {
-            debug!("Found checksum asset: {}", checksum_asset.name);
-            let checksum_response = self
-                .client
-                .get(&checksum_asset.browser_download_url)
-                .send()
-                .await?;
-            if !checksum_response.status().is_success() {
-                return Err(UpgradeError::GitHubApi(format!(
-                    "Failed to fetch checksum: status {}",
-                    checksum_response.status()
-                ))
-                .into());
-            }
-            let checksum_text = checksum_response.text().await?;
-            let expected = checksum_text.split_whitespace().next().unwrap_or("").trim();
+        if let Some(expected) = &expected_sha256 {
             let actual = crate::util::sha256_digest(&bytes);
-            if actual != expected {
+            if *expected != actual {
                 return Err(UpgradeError::ChecksumMismatch {
-                    expected: expected.to_string(),
+                    expected: expected.clone(),
                     actual,
                 }
                 .into());
@@ -366,6 +361,24 @@ impl Upgrader {
         pb.finish_with_message("Downloaded");
 
         Ok(download_path)
+    }
+
+    async fn fetch_checksum(&self, url: &str) -> Result<String> {
+        let response = self.client.get(url).send().await?;
+        if !response.status().is_success() {
+            return Err(UpgradeError::GitHubApi(format!(
+                "Failed to fetch checksum: status {}",
+                response.status()
+            ))
+            .into());
+        }
+        let text = response.text().await?;
+        Ok(text
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string())
     }
 
     fn install_binary(&self, download_path: &PathBuf) -> Result<()> {
