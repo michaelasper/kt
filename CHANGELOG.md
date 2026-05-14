@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.8.2 (2026-05-14)</small>
+
+* fix: remove unused &self from find_checksum_asset, move checksum fetch before progress bar ([4565531](https://github.com/michaelasper/kt/commit/4565531))
+* fix: verify SHA256 of downloaded upgrade binary against release checksum asset ([12b6875](https://github.com/michaelasper/kt/commit/12b6875))
+
 ## <small>0.8.1 (2026-05-14)</small>
 
 * fix: gate dead agent module behind feature flag and skip diagnostics overhead when disabled ([736bb05](https://github.com/michaelasper/kt/commit/736bb05))
