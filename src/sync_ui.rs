@@ -40,11 +40,28 @@ impl SyncUI {
         }
     }
 
-    pub fn finish(&mut self, total_files: usize, total_chunks: usize) {
+    pub fn finish(
+        &mut self,
+        total_files: usize,
+        total_chunks: usize,
+        errors: usize,
+        failed_paths: Vec<String>,
+    ) {
         match self {
-            SyncUI::Pretty(ui) => ui.finish(total_files, total_chunks),
+            SyncUI::Pretty(ui) => ui.finish(total_files, total_chunks, errors, failed_paths),
             SyncUI::Plain => {
-                tracing::info!("Sync complete: {total_files} files, {total_chunks} chunks indexed")
+                if errors > 0 {
+                    tracing::warn!(
+                        "Sync complete: {total_files} files, {total_chunks} chunks indexed, {errors} errors"
+                    );
+                    for path in failed_paths {
+                        tracing::warn!("  - Failed: {path}");
+                    }
+                } else {
+                    tracing::info!(
+                        "Sync complete: {total_files} files, {total_chunks} chunks indexed"
+                    )
+                }
             }
         }
     }
@@ -154,7 +171,13 @@ impl PrettySyncUI {
         self.target_bar.tick();
     }
 
-    fn finish(&mut self, total_files: usize, total_chunks: usize) {
+    fn finish(
+        &mut self,
+        total_files: usize,
+        total_chunks: usize,
+        errors: usize,
+        failed_paths: Vec<String>,
+    ) {
         let _ = self.tx.send(());
         if let Some(handle) = self.rain_handle.take() {
             let _ = handle.join();
@@ -166,10 +189,23 @@ impl PrettySyncUI {
         let top = format_box_top(width);
         let bot = format_box_bot(width);
         let line1 = format_box_line(&format!("  {} SYNC COMPLETE", style("✓").green()), width);
-        let detail = format_sync_summary(total_files, total_chunks);
+        let detail = format_sync_summary(total_files, total_chunks, errors);
         let line2 = format_box_line(&detail, width);
 
-        println!("\n{top}\n{line1}\n{line2}\n{bot}\n");
+        println!("\n{top}\n{line1}\n{line2}\n{bot}");
+
+        if !failed_paths.is_empty() {
+            println!(
+                "  {} The following files failed to parse:",
+                style("⚠").yellow()
+            );
+            for path in failed_paths {
+                println!("    - {}", style(path).red());
+            }
+            println!();
+        } else {
+            println!();
+        }
     }
 
     fn status_line(&self, state: &str) -> String {
@@ -194,11 +230,15 @@ impl PrettySyncUI {
     }
 }
 
-fn format_sync_summary(total_files: usize, total_chunks: usize) -> String {
-    format!(
+fn format_sync_summary(total_files: usize, total_chunks: usize, errors: usize) -> String {
+    let mut summary = format!(
         "    {} files shredded into {} chunks",
         total_files, total_chunks
-    )
+    );
+    if errors > 0 {
+        summary.push_str(&format!(" ({} {})", errors, style("errors").red()));
+    }
+    summary
 }
 
 fn rain_loop(rx: mpsc::Receiver<()>, bars: Vec<ProgressBar>) {
@@ -287,9 +327,9 @@ mod tests {
         assert_eq!(ui.total_chunks, 22);
 
         assert_eq!(
-            format_sync_summary(3, 22),
+            format_sync_summary(3, 22, 0),
             "    3 files shredded into 22 chunks"
         );
-        ui.finish(3, 22);
+        ui.finish(3, 22, 0, Vec::new());
     }
 }

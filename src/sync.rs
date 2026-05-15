@@ -31,12 +31,13 @@ pub struct SyncStats {
     pub total_files: usize,
     pub total_chunks: usize,
     pub errors: usize,
+    pub failed_paths: Vec<String>,
 }
 
 pub trait SyncProgress: Send + Sync {
     fn start_file(&mut self, path: &str, index: usize);
     fn finish_file(&mut self, path: &str, chunks: usize);
-    fn finish(&mut self, files: usize, chunks: usize);
+    fn finish(&mut self, files: usize, chunks: usize, errors: usize, failed_paths: Vec<String>);
 }
 
 pub struct NoopProgress;
@@ -44,7 +45,14 @@ pub struct NoopProgress;
 impl SyncProgress for NoopProgress {
     fn start_file(&mut self, _path: &str, _index: usize) {}
     fn finish_file(&mut self, _path: &str, _chunks: usize) {}
-    fn finish(&mut self, _files: usize, _chunks: usize) {}
+    fn finish(
+        &mut self,
+        _files: usize,
+        _chunks: usize,
+        _errors: usize,
+        _failed_paths: Vec<String>,
+    ) {
+    }
 }
 
 pub async fn plan(
@@ -263,6 +271,7 @@ pub async fn execute(
     let total_chunks = Arc::new(AtomicUsize::new(0));
     let total_files = Arc::new(AtomicUsize::new(0));
     let errors = Arc::new(AtomicUsize::new(0));
+    let failed_paths = Arc::new(Mutex::new(Vec::new()));
 
     let concurrency = std::thread::available_parallelism()
         .map(|p| p.get())
@@ -279,6 +288,7 @@ pub async fn execute(
             let total_chunks = total_chunks.clone();
             let total_files = total_files.clone();
             let errors = errors.clone();
+            let failed_paths = failed_paths.clone();
             let semaphore = semaphore.clone();
             let progress = progress.clone();
             let diagnostics = diagnostics.clone();
@@ -295,15 +305,30 @@ pub async fn execute(
                 }
 
                 let parse_start = std::time::Instant::now();
-                let chunks = crate::indexing::parse_file_async(
+                let chunks = match crate::indexing::parse_file_async(
                     file.path.clone(),
                     file.relative_path.clone(),
                     file.language,
                     codebase_id.clone(),
                 )
-                .await;
+                .await
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!("Failed to parse {}: {e}", file.relative_path);
+                        errors.fetch_add(1, Ordering::SeqCst);
+                        {
+                            let mut fps = failed_paths.lock().await;
+                            fps.push(file.relative_path.clone());
+                        }
+                        let mut p = progress.lock().await;
+                        p.finish_file(&file.relative_path, 0);
+                        return;
+                    }
+                };
 
                 if chunks.is_empty() {
+                    tracing::debug!("No chunks produced for {}", file.relative_path);
                     let mut p = progress.lock().await;
                     p.finish_file(&file.relative_path, 0);
                     return;
@@ -382,10 +407,12 @@ pub async fn execute(
         })
         .await;
 
+    let final_failed_paths = failed_paths.lock().await.clone();
     Ok(SyncStats {
         total_files: total_files.load(Ordering::SeqCst),
         total_chunks: total_chunks.load(Ordering::SeqCst),
         errors: errors.load(Ordering::SeqCst),
+        failed_paths: final_failed_paths,
     })
 }
 
@@ -397,35 +424,31 @@ pub async fn finalize(
 ) -> anyhow::Result<()> {
     let root_buf = root.to_path_buf();
     match strategy {
-        SyncStrategy::Full => {
-            let commit = tokio::task::spawn_blocking(move || {
-                git::get_git_info(&root_buf)
-                    .ok()
-                    .and_then(|info| info.commit_sha)
-            })
-            .await?;
+        SyncStrategy::Full | SyncStrategy::PartialGit { .. } => {
+            let codebase_id = codebase.codebase_id.clone();
+            let commit_result = tokio::task::spawn_blocking(move || git::get_git_info(&root_buf))
+                .await
+                .map_err(anyhow::Error::from)?;
+
+            let commit = match commit_result {
+                Ok(info) => info.commit_sha,
+                Err(e) => {
+                    tracing::warn!("Failed to retrieve git info during sync finalize: {e}");
+                    // Preserve the previous commit if possible to avoid full re-index next time
+                    storage
+                        .get_last_synced_commit(&codebase_id)
+                        .await
+                        .ok()
+                        .flatten()
+                }
+            };
+
             storage
                 .mark_codebase_indexed(&codebase.codebase_id, commit.as_deref())
                 .await?;
+
             if let Some(commit) = commit {
-                tracing::debug!(
-                    "Saved last synced commit after full sync to {}",
-                    &commit[..8]
-                );
-            }
-        }
-        SyncStrategy::PartialGit { .. } => {
-            let commit = tokio::task::spawn_blocking(move || {
-                git::get_git_info(&root_buf)
-                    .ok()
-                    .and_then(|info| info.commit_sha)
-            })
-            .await?;
-            storage
-                .mark_codebase_indexed(&codebase.codebase_id, commit.as_deref())
-                .await?;
-            if let Some(commit) = commit {
-                tracing::debug!("Updated last synced commit to {}", &commit[..8]);
+                tracing::debug!("Saved last synced commit to {}", &commit[..8]);
             }
         }
         SyncStrategy::PartialMtime => {

@@ -195,7 +195,18 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
 }
 
 pub(crate) fn escape_exact_match(path: &str) -> String {
-    path.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut result = String::with_capacity(path.len());
+    for ch in path.chars() {
+        match ch {
+            '\\' | '"' | '\'' | '(' | ')' | '-' | '!' | '@' | '$' | ':' | '{' | '}' | '[' | ']'
+            | '~' | '%' | '^' | '&' | '#' | '<' | '>' | '|' | ';' | ',' => {
+                result.push('\\');
+                result.push(ch);
+            }
+            _ => result.push(ch),
+        }
+    }
+    result
 }
 
 pub(crate) fn extract_doc_keys(value: &redis::Value) -> Vec<String> {
@@ -992,6 +1003,13 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("start_line"));
+    }
+
+    #[test]
+    fn test_escape_exact_match_escapes_special_characters() {
+        let path = "src/auth(main)-v1.rs";
+        let escaped = super::escape_exact_match(path);
+        assert_eq!(escaped, "src/auth\\(main\\)\\-v1.rs");
     }
 
     #[test]

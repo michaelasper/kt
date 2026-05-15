@@ -569,13 +569,20 @@ impl KtServer {
             }
 
             let language = language.unwrap();
-            let chunks = crate::indexing::parse_file_async(
+            let chunks = match crate::indexing::parse_file_async(
                 file_path,
                 filepath.to_string(),
                 language,
                 codebase.codebase_id.clone(),
             )
-            .await;
+            .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("Failed to parse {}: {e}", filepath);
+                    continue;
+                }
+            };
 
             if chunks.is_empty() {
                 continue;

@@ -12,13 +12,10 @@ pub async fn parse_file_async(
     relative_path: String,
     language: Language,
     codebase_id: String,
-) -> Vec<Chunk> {
+) -> crate::error::Result<Vec<Chunk>> {
     tokio::task::spawn_blocking(move || parse_file(&path, &relative_path, language, &codebase_id))
         .await
-        .unwrap_or_else(|e| {
-            warn!("Task join error during parse_file_async: {e}");
-            Vec::new()
-        })
+        .map_err(crate::error::KtError::from)?
 }
 
 pub fn parse_file(
@@ -26,41 +23,46 @@ pub fn parse_file(
     relative_path: &str,
     language: Language,
     codebase_id: &str,
-) -> Vec<Chunk> {
+) -> crate::error::Result<Vec<Chunk>> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
-            warn!("Failed to read file {}: {e}", path.display());
-            return Vec::new();
+            return Err(crate::error::KtError::ParseFailed {
+                path: relative_path.to_string(),
+                reason: format!("Failed to read file: {e}"),
+            });
         }
     };
 
     let config = LanguageConfig::for_language(language);
     let mut parser = Parser::new();
     if let Err(e) = parser.set_language(&config.tree_sitter_language()) {
-        warn!(
-            "Failed to set language for {:?}: {e}. Skipping file: {}",
-            language,
-            path.display()
-        );
-        return Vec::new();
+        return Err(crate::error::KtError::ParseFailed {
+            path: relative_path.to_string(),
+            reason: format!("Failed to set language: {e}"),
+        });
     }
 
     match parser.parse(&source, None) {
-        Some(tree) => extract_chunks(
+        Some(tree) => Ok(extract_chunks(
             &tree,
             &source,
             relative_path,
             language,
             &config,
             codebase_id,
-        ),
+        )),
         None => {
             warn!(
                 "Tree-sitter parse failed for {}, falling back to line splitting",
                 path.display()
             );
-            fallback_line_chunks(&source, relative_path, language, codebase_id)
+            Ok(fallback_line_chunks(
+                &source,
+                relative_path,
+                language,
+                codebase_id,
+            ))
         }
     }
 }
@@ -148,7 +150,7 @@ fn build_chunk(
         return None;
     }
 
-    let name = extract_name(node, ctx.source)?;
+    let name = extract_name(node, ctx.source);
     let node_type = normalize_node_type(node.kind(), &content);
     let signature = extract_signature(node, ctx.source);
     let start_line = node.start_position().row;
@@ -209,14 +211,14 @@ fn extract_container_header(node: Node, source: &str) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-fn extract_name(node: Node, source: &str) -> Option<String> {
+fn extract_name(node: Node, source: &str) -> String {
     if let Some(name) = extract_special_name(node, source) {
-        return Some(name);
+        return name;
     }
 
     if node.kind() == "type_declaration" {
         if let Some(name) = type_declaration_name(&node_text(node, source)) {
-            return Some(name);
+            return name;
         }
     }
 
@@ -224,7 +226,7 @@ fn extract_name(node: Node, source: &str) -> Option<String> {
         if let Some(child) = node.child_by_field_name(field_name) {
             let text = clean_name(&node_text(child, source));
             if !text.is_empty() {
-                return Some(text);
+                return text;
             }
         }
     }
@@ -233,15 +235,15 @@ fn extract_name(node: Node, source: &str) -> Option<String> {
     for child in node.children(&mut cursor) {
         match child.kind() {
             "identifier" | "type_identifier" | "field_identifier" | "property_identifier" => {
-                return Some(clean_name(&node_text(child, source)));
+                return clean_name(&node_text(child, source));
             }
             "name" => {
-                return Some(clean_name(&node_text(child, source)));
+                return clean_name(&node_text(child, source));
             }
             _ => {}
         }
     }
-    Some(format!("{}_{}", node.kind(), node.start_position().row))
+    format!("{}_{}", node.kind(), node.start_position().row)
 }
 
 fn extract_special_name(node: Node, source: &str) -> Option<String> {
@@ -966,7 +968,8 @@ public record UserDto(String id) {
             Language::Rust,
             "test-codebase".to_string(),
         )
-        .await;
+        .await
+        .unwrap();
 
         assert!(!chunks.is_empty());
         assert_eq!(chunks[0].name, "main");
@@ -977,16 +980,13 @@ public record UserDto(String id) {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("nonexistent.rs");
 
-        let chunks = parse_file(
+        let result = parse_file(
             &file_path,
             "nonexistent.rs",
             Language::Rust,
             "test-codebase",
         );
 
-        assert!(
-            chunks.is_empty(),
-            "Should return empty Vec on file read error"
-        );
+        assert!(result.is_err(), "Should return Err on file read error");
     }
 }

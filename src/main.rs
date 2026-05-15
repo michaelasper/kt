@@ -145,8 +145,8 @@ impl kt::sync::SyncProgress for CliProgress {
         self.ui.finish_file(path, chunks);
     }
 
-    fn finish(&mut self, files: usize, chunks: usize) {
-        self.ui.finish(files, chunks);
+    fn finish(&mut self, files: usize, chunks: usize, errors: usize, failed_paths: Vec<String>) {
+        self.ui.finish(files, chunks, errors, failed_paths);
     }
 }
 
@@ -227,7 +227,12 @@ async fn run_sync(
 
     {
         let mut p = progress.lock().await;
-        p.finish(stats.total_files, stats.total_chunks);
+        p.finish(
+            stats.total_files,
+            stats.total_chunks,
+            stats.errors,
+            stats.failed_paths,
+        );
     }
 
     Ok(())
