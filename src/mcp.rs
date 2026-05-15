@@ -698,10 +698,7 @@ fn format_query_response(response: &QueryResponse) -> String {
         QueryStatus::Failure => "failure",
     };
 
-    let mut xml = format!(
-        "<query_response status=\"{}\">\n",
-        status_str
-    );
+    let mut xml = format!("<query_response status=\"{}\">\n", status_str);
 
     xml.push_str("  <answer>\n");
     xml.push_str(&xml_escape(&response.answer));
