@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.12.0 (2026-05-15)
+
+* test: add unit tests for AgentExecutor and cleanup imports ([0811412](https://github.com/michaelasper/kt/commit/0811412))
+* feat: implement agentic RAG executor and manage dependency risk ([5d55b94](https://github.com/michaelasper/kt/commit/5d55b94))
+
 ## 0.11.0 (2026-05-15)
 
 * feat: add TypeScript/JavaScript support and optimize search ([616a389](https://github.com/michaelasper/kt/commit/616a389))
