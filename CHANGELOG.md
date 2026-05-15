@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.10.2 (2026-05-15)</small>
+
+* style: apply cargo fmt ([9bf3cdc](https://github.com/michaelasper/kt/commit/9bf3cdc))
+* style: apply cargo fmt ([cb5d639](https://github.com/michaelasper/kt/commit/cb5d639))
+* perf: upgrade to HNSW vector index and cleanup dead code ([0d6cc9f](https://github.com/michaelasper/kt/commit/0d6cc9f))
+* chore: implement review nit and add BACKLOG.md ([7cfc514](https://github.com/michaelasper/kt/commit/7cfc514))
+* security: sanitize directory paths in MCP and fix cache dir fallback ([0609e2a](https://github.com/michaelasper/kt/commit/0609e2a))
+
 ## <small>0.10.1 (2026-05-15)</small>
 
 * perf: optimize redis connection reuse and search escaping ([4609df0](https://github.com/michaelasper/kt/commit/4609df0))
