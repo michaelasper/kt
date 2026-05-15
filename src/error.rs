@@ -17,12 +17,6 @@ pub enum KtError {
     #[error("HTTP request error: {0}")]
     Http(#[from] reqwest::Error),
 
-    #[error("Index not found: {0}")]
-    IndexNotFound(String),
-
-    #[error("No chunks found for file: {0}")]
-    FileNotFound(String),
-
     #[error("Embedding model not available: {0}")]
     ModelUnavailable(String),
 

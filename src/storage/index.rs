@@ -11,12 +11,14 @@ pub(crate) const CODEBASE_PREFIX: &str = "kt:codebase:";
 pub(crate) const CODEBASE_ALIAS_PREFIX: &str = "kt:codebase_alias:";
 pub(crate) const SCHEMA_VERSION_KEY: &str = "kt:schema_version";
 pub(crate) const SCHEMA_MIGRATION_LOCK_KEY: &str = "kt:schema_migration_lock";
-pub(crate) const SCHEMA_VERSION: &str = "2";
+pub(crate) const SCHEMA_VERSION: &str = "3";
 
 pub(crate) fn is_index_not_found_error(err: &redis::RedisError) -> bool {
     let msg = err.to_string().to_lowercase();
     msg.contains("unknown index")
         || msg.contains("no such index")
+        || msg.contains("no: such index")
+        || msg.contains("index not found")
         || (msg.contains("index name") && (msg.contains("unknown") || msg.contains("not found")))
 }
 
@@ -65,14 +67,18 @@ fn build_schema_args(include_mtime: bool) -> Vec<&'static str> {
         "TEXT",
         "embedding",
         "VECTOR",
-        "FLAT",
-        "6",
+        "HNSW",
+        "10",
         "TYPE",
         "FLOAT32",
         "DIM",
         "384",
         "DISTANCE_METRIC",
         "COSINE",
+        "M",
+        "16",
+        "EF_CONSTRUCTION",
+        "200",
     ];
     if include_mtime {
         args.extend_from_slice(&["mtime", "TEXT"]);
@@ -80,7 +86,7 @@ fn build_schema_args(include_mtime: bool) -> Vec<&'static str> {
     args
 }
 
-pub(super) async fn ensure_schema_v2(
+pub(super) async fn ensure_latest_schema(
     conn: &mut redis::aio::MultiplexedConnection,
 ) -> anyhow::Result<()> {
     let version: Option<String> = cmd("GET").arg(SCHEMA_VERSION_KEY).query_async(conn).await?;
@@ -98,7 +104,7 @@ pub(super) async fn ensure_schema_v2(
         .await?;
 
     if lock.is_some() {
-        migrate_to_schema_v2(conn).await?;
+        migrate_to_latest_schema(conn).await?;
         cmd("SET")
             .arg(SCHEMA_VERSION_KEY)
             .arg(SCHEMA_VERSION)
@@ -122,8 +128,8 @@ pub(super) async fn ensure_schema_v2(
     anyhow::bail!("Timed out waiting for kt Redis schema migration");
 }
 
-async fn migrate_to_schema_v2(conn: &mut redis::aio::MultiplexedConnection) -> anyhow::Result<()> {
-    info!("Migrating Redis schema to v2; existing kt index data will be removed");
+async fn migrate_to_latest_schema(conn: &mut redis::aio::MultiplexedConnection) -> anyhow::Result<()> {
+    info!("Migrating Redis schema to v{SCHEMA_VERSION}; existing kt index data will be removed");
     drop_index_with_data(conn, INDEX_NAME).await?;
     drop_index_with_data(conn, SHADOW_INDEX_NAME).await?;
 

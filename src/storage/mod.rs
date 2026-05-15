@@ -51,7 +51,7 @@ impl Storage {
 
     pub async fn ensure_index(&self) -> anyhow::Result<()> {
         let mut conn = self.connection().await?;
-        index::ensure_schema_v2(&mut conn).await?;
+        index::ensure_latest_schema(&mut conn).await?;
 
         if index::index_exists(&mut conn, index::INDEX_NAME).await? {
             info!(
@@ -68,7 +68,7 @@ impl Storage {
 
     pub async fn ensure_shadow_index(&self) -> anyhow::Result<()> {
         let mut conn = self.connection().await?;
-        index::ensure_schema_v2(&mut conn).await?;
+        index::ensure_latest_schema(&mut conn).await?;
 
         if index::index_exists(&mut conn, index::SHADOW_INDEX_NAME).await? {
             info!(
@@ -167,18 +167,6 @@ impl Storage {
         let mut results =
             search::read_file_chunks_impl(&mut conn, index::INDEX_NAME, filepath, codebase_id)
                 .await?;
-        self.hydrate_codebase_metadata(&mut conn, &mut results)
-            .await?;
-        Ok(results)
-    }
-
-    pub async fn lookup_chunks_by_name(
-        &self,
-        names: &[String],
-    ) -> anyhow::Result<Vec<SearchResult>> {
-        let mut conn = self.connection().await?;
-        let mut results =
-            search::lookup_chunks_by_name_impl(&mut conn, index::INDEX_NAME, names, None).await?;
         self.hydrate_codebase_metadata(&mut conn, &mut results)
             .await?;
         Ok(results)
@@ -303,6 +291,7 @@ impl Storage {
         embeddings: &[Vec<f32>],
         ttl_seconds: u64,
     ) -> anyhow::Result<()> {
+        self.ensure_shadow_index().await?;
         let mut conn = self.connection().await?;
         commands::store_shadow_chunks_batch_impl(&mut conn, chunks, embeddings, ttl_seconds).await
     }

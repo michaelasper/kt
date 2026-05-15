@@ -89,9 +89,9 @@ jobs:
       - name: Start Redis Stack (macOS)
         run: |
           brew tap redis/redis
-          brew install --cask redis
+          brew install redis-stack
           brew install openssl
-          redis-server "$(brew --prefix)/etc/redis.conf" --daemonize yes
+          $(brew --prefix redis-stack)/bin/redis-stack-server --daemonize yes
           for i in $(seq 1 10); do
             if redis-cli ping 2>/dev/null | grep -q PONG; then break; fi
             sleep 1
