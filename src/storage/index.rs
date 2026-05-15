@@ -128,7 +128,9 @@ pub(super) async fn ensure_latest_schema(
     anyhow::bail!("Timed out waiting for kt Redis schema migration");
 }
 
-async fn migrate_to_latest_schema(conn: &mut redis::aio::MultiplexedConnection) -> anyhow::Result<()> {
+async fn migrate_to_latest_schema(
+    conn: &mut redis::aio::MultiplexedConnection,
+) -> anyhow::Result<()> {
     info!("Migrating Redis schema to v{SCHEMA_VERSION}; existing kt index data will be removed");
     drop_index_with_data(conn, INDEX_NAME).await?;
     drop_index_with_data(conn, SHADOW_INDEX_NAME).await?;
