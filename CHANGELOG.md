@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.11.0 (2026-05-15)
+
+* feat: add TypeScript/JavaScript support and optimize search ([616a389](https://github.com/michaelasper/kt/commit/616a389))
+
 ## <small>0.10.3 (2026-05-15)</small>
 
 * style: apply cargo fmt ([b10f60f](https://github.com/michaelasper/kt/commit/b10f60f))
