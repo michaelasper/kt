@@ -125,6 +125,7 @@ fn load_global_config() -> Result<Option<GlobalConfig>> {
 
 fn default_model_cache_dir() -> PathBuf {
     dirs::cache_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
         .unwrap_or_else(|| PathBuf::from("."))
         .join("kt")
 }

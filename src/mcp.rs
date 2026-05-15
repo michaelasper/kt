@@ -352,13 +352,7 @@ impl KtServer {
     async fn kt_sync_inner(&self, params: SyncParams) -> Result<CallToolResult, rmcp::ErrorData> {
         self.ensure_ready().await.map_err(mcp_error)?;
 
-        let root = std::path::Path::new(&params.directory_path);
-        if !root.exists() {
-            return Err(mcp_error(format!(
-                "Directory not found: {}",
-                params.directory_path
-            )));
-        }
+        let root = validate_directory_path(&params.directory_path)?;
 
         let full = params.full.unwrap_or(false);
         info!(
@@ -368,7 +362,7 @@ impl KtServer {
 
         let storage = self.inner.storage.read().await;
         let codebase = storage
-            .register_codebase(root, params.codebase_alias.as_deref())
+            .register_codebase(&root, params.codebase_alias.as_deref())
             .await
             .map_err(mcp_error)?;
         let embedding_guard = self.inner.embedding.read().await;
@@ -378,7 +372,7 @@ impl KtServer {
 
         let discovery_options = self.inner.config.discovery_options();
         let plan = crate::sync::plan_with_options(
-            root,
+            &root,
             &storage,
             &codebase,
             full,
@@ -389,7 +383,7 @@ impl KtServer {
         .map_err(mcp_error)?;
 
         if plan.files.is_empty() {
-            crate::sync::finalize(root, &codebase, &plan.strategy, &storage)
+            crate::sync::finalize(&root, &codebase, &plan.strategy, &storage)
                 .await
                 .map_err(mcp_error)?;
             return Ok(CallToolResult::success(vec![Content::text(
@@ -410,7 +404,7 @@ impl KtServer {
         .await
         .map_err(mcp_error)?;
 
-        crate::sync::finalize(root, &codebase, &strategy, &storage)
+        crate::sync::finalize(&root, &codebase, &strategy, &storage)
             .await
             .map_err(mcp_error)?;
 
@@ -457,7 +451,7 @@ impl KtServer {
         &self,
         params: GitStatusParams,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let root = std::path::PathBuf::from(&params.directory_path);
+        let root = validate_directory_path(&params.directory_path)?;
         let git_info = tokio::task::spawn_blocking(move || git::get_git_info(&root))
             .await
             .map_err(mcp_error)?
@@ -504,17 +498,11 @@ impl KtServer {
         let start = std::time::Instant::now();
         self.ensure_ready().await.map_err(mcp_error)?;
 
-        let root = std::path::Path::new(&params.directory_path);
-        if !root.exists() {
-            return Err(mcp_error(format!(
-                "Directory not found: {}",
-                params.directory_path
-            )));
-        }
+        let root = validate_directory_path(&params.directory_path)?;
 
         let storage = self.inner.storage.read().await;
         let codebase = storage
-            .register_codebase(root, None)
+            .register_codebase(&root, None)
             .await
             .map_err(mcp_error)?;
         storage.ensure_shadow_index().await.map_err(mcp_error)?;
@@ -724,13 +712,58 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_directory_path(path: &str) -> Result<std::path::PathBuf, rmcp::ErrorData> {
+    let path = std::path::PathBuf::from(path);
+    if !path.exists() {
+        return Err(mcp_error(format!("Directory not found: {}", path.display())));
+    }
+
+    // Canonicalize to resolve .. and symlinks
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| mcp_error(format!("Failed to resolve path: {e}")))?;
+
+    if !canonical.is_dir() {
+        return Err(mcp_error(format!(
+            "Path is not a directory: {}",
+            canonical.display()
+        )));
+    }
+
+    // Basic safety: block root and common system top-level dirs on Unix
+    #[cfg(unix)]
+    {
+        if canonical == std::path::Path::new("/") {
+            return Err(mcp_error("Access to root directory denied"));
+        }
+
+        let forbidden = ["/bin", "/sbin", "/boot", "/dev", "/root", "/sys", "/proc"];
+        for f in forbidden {
+            if canonical.starts_with(f) {
+                return Err(mcp_error(format!(
+                    "Access to system directory denied: {}",
+                    canonical.display()
+                )));
+            }
+        }
+    }
+
+    Ok(canonical)
+}
+
 async fn resolve_codebase_selector(
     storage: &Storage,
     directory_path: Option<&str>,
     codebase_alias: Option<&str>,
-) -> anyhow::Result<Option<crate::Codebase>> {
-    let directory = directory_path.map(std::path::Path::new);
-    storage.resolve_codebase(directory, codebase_alias).await
+) -> Result<Option<crate::Codebase>, rmcp::ErrorData> {
+    let directory = match directory_path {
+        Some(path) => Some(validate_directory_path(path)?),
+        None => None,
+    };
+    storage
+        .resolve_codebase(directory.as_deref(), codebase_alias)
+        .await
+        .map_err(mcp_error)
 }
 
 fn deduplicate_results(results: Vec<SearchResult>) -> Vec<SearchResult> {
