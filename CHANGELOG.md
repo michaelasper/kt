@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.10.1 (2026-05-15)</small>
+
+* perf: optimize redis connection reuse and search escaping ([4609df0](https://github.com/michaelasper/kt/commit/4609df0))
+
 ## 0.10.0 (2026-05-15)
 
 * refactor: satisfy clippy too_many_arguments in search ([4efb52f](https://github.com/michaelasper/kt/commit/4efb52f))
