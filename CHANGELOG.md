@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.10.3 (2026-05-15)</small>
+
+* style: apply cargo fmt ([b10f60f](https://github.com/michaelasper/kt/commit/b10f60f))
+* perf: implement session pool for parallel embedding ([bea523b](https://github.com/michaelasper/kt/commit/bea523b))
+
 ## <small>0.10.2 (2026-05-15)</small>
 
 * style: apply cargo fmt ([9bf3cdc](https://github.com/michaelasper/kt/commit/9bf3cdc))
