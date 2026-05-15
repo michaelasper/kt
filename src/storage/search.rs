@@ -434,14 +434,16 @@ pub(super) async fn hybrid_search_impl(
     // Stage 1: Strict Hybrid (AND)
     let results = execute_hybrid_lane(
         conn,
-        index_name,
-        &embedding_bytes,
-        query_text,
-        language,
-        codebase_id,
-        limit,
-        top_k,
-        LexicalMode::And,
+        HybridLaneParams {
+            index_name,
+            embedding_bytes: &embedding_bytes,
+            query_text,
+            language,
+            codebase_id,
+            limit,
+            top_k,
+            mode: LexicalMode::And,
+        },
     )
     .await?;
 
@@ -453,14 +455,16 @@ pub(super) async fn hybrid_search_impl(
     debug!("Stage 1 (AND) returned 0 results, falling back to Stage 2 (OR)");
     let results = execute_hybrid_lane(
         conn,
-        index_name,
-        &embedding_bytes,
-        query_text,
-        language,
-        codebase_id,
-        limit,
-        top_k,
-        LexicalMode::Or,
+        HybridLaneParams {
+            index_name,
+            embedding_bytes: &embedding_bytes,
+            query_text,
+            language,
+            codebase_id,
+            limit,
+            top_k,
+            mode: LexicalMode::Or,
+        },
     )
     .await?;
 
@@ -499,27 +503,36 @@ pub(super) async fn hybrid_search_impl(
         .collect())
 }
 
-async fn execute_hybrid_lane(
-    conn: &mut redis::aio::MultiplexedConnection,
-    index_name: &str,
-    embedding_bytes: &[u8],
-    query_text: &str,
-    language: Option<&Language>,
-    codebase_id: Option<&str>,
+struct HybridLaneParams<'a> {
+    index_name: &'a str,
+    embedding_bytes: &'a [u8],
+    query_text: &'a str,
+    language: Option<&'a Language>,
+    codebase_id: Option<&'a str>,
     limit: usize,
     top_k: usize,
     mode: LexicalMode,
+}
+
+async fn execute_hybrid_lane(
+    conn: &mut redis::aio::MultiplexedConnection,
+    params: HybridLaneParams<'_>,
 ) -> anyhow::Result<Vec<SearchResult>> {
-    let semantic_query = build_semantic_query(query_text, language, codebase_id, limit);
+    let semantic_query = build_semantic_query(
+        params.query_text,
+        params.language,
+        params.codebase_id,
+        params.limit,
+    );
 
     let mut pipe = redis::pipe();
     pipe.cmd("FT.SEARCH")
-        .arg(index_name)
+        .arg(params.index_name)
         .arg(&semantic_query)
         .arg("PARAMS")
         .arg(2)
         .arg("query_vec")
-        .arg(embedding_bytes)
+        .arg(params.embedding_bytes)
         .arg("DIALECT")
         .arg(2)
         .arg("SORTBY")
@@ -527,19 +540,24 @@ async fn execute_hybrid_lane(
         .arg("ASC")
         .arg("LIMIT")
         .arg(0)
-        .arg(limit);
+        .arg(params.limit);
     append_search_return_fields_to_pipeline(&mut pipe);
 
-    let lexical_query = build_lexical_query(query_text, language, codebase_id, mode);
+    let lexical_query = build_lexical_query(
+        params.query_text,
+        params.language,
+        params.codebase_id,
+        params.mode,
+    );
     if let Some(lq) = &lexical_query {
         pipe.cmd("FT.SEARCH")
-            .arg(index_name)
+            .arg(params.index_name)
             .arg(lq)
             .arg("DIALECT")
             .arg(2)
             .arg("LIMIT")
             .arg(0)
-            .arg(limit);
+            .arg(params.limit);
         append_search_return_fields_to_pipeline(&mut pipe);
     }
 
@@ -551,7 +569,11 @@ async fn execute_hybrid_lane(
         Vec::new()
     };
 
-    Ok(fuse_search_lanes(semantic_results, lexical_results, top_k))
+    Ok(fuse_search_lanes(
+        semantic_results,
+        lexical_results,
+        params.top_k,
+    ))
 }
 
 struct FusedSearchResult {
