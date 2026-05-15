@@ -117,7 +117,9 @@ impl SessionPool {
         }
     }
 
-    async fn acquire(&self) -> anyhow::Result<(ort::session::Session, tokio::sync::OwnedSemaphorePermit)> {
+    async fn acquire(
+        &self,
+    ) -> anyhow::Result<(ort::session::Session, tokio::sync::OwnedSemaphorePermit)> {
         let permit = self
             .semaphore
             .clone()
