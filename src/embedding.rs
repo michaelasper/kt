@@ -103,10 +103,52 @@ fn tokenize_and_pad(tokenizer: &Tokenizer, texts: &[&str]) -> anyhow::Result<Bat
     })
 }
 
+struct SessionPool {
+    sessions: tokio::sync::Mutex<Vec<ort::session::Session>>,
+    semaphore: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
+impl SessionPool {
+    fn new(sessions: Vec<ort::session::Session>) -> Self {
+        let count = sessions.len();
+        Self {
+            sessions: tokio::sync::Mutex::new(sessions),
+            semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(count)),
+        }
+    }
+
+    async fn acquire(&self) -> anyhow::Result<(ort::session::Session, tokio::sync::OwnedSemaphorePermit)> {
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| anyhow::anyhow!("Semaphore error: {e}"))?;
+        let mut sessions = self.sessions.lock().await;
+        let session = sessions
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("Session pool exhausted"))?;
+        Ok((session, permit))
+    }
+
+    async fn release(&self, session: ort::session::Session) {
+        let mut sessions = self.sessions.lock().await;
+        sessions.push(session);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EmbeddingEngine {
-    session: std::sync::Arc<std::sync::Mutex<ort::session::Session>>,
+    pool: std::sync::Arc<SessionPool>,
     tokenizer: std::sync::Arc<Tokenizer>,
+}
+
+impl std::fmt::Debug for SessionPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionPool")
+            .field("available", &self.semaphore.available_permits())
+            .finish()
+    }
 }
 
 impl EmbeddingEngine {
@@ -124,20 +166,28 @@ impl EmbeddingEngine {
             info!("Model download complete");
         }
 
-        let session = ort::session::Session::builder()
-            .map_err(|e| anyhow::anyhow!("Session builder error: {e}"))?
-            .with_optimization_level(GraphOptimizationLevel::Level1)
-            .map_err(|e| anyhow::anyhow!("Optimization level error: {e}"))?
-            .with_intra_threads(1)
-            .map_err(|e| anyhow::anyhow!("Thread config error: {e}"))?
-            .commit_from_file(&model_path)
-            .map_err(|e| anyhow::anyhow!("Model load error: {e}"))?;
+        let concurrency = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(4);
+
+        let mut sessions = Vec::with_capacity(concurrency);
+        for _ in 0..concurrency {
+            let session = ort::session::Session::builder()
+                .map_err(|e| anyhow::anyhow!("Session builder error: {e}"))?
+                .with_optimization_level(GraphOptimizationLevel::Level1)
+                .map_err(|e| anyhow::anyhow!("Optimization level error: {e}"))?
+                .with_intra_threads(1)
+                .map_err(|e| anyhow::anyhow!("Thread config error: {e}"))?
+                .commit_from_file(&model_path)
+                .map_err(|e| anyhow::anyhow!("Model load error: {e}"))?;
+            sessions.push(session);
+        }
 
         let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(KtError::Tokenizer)?;
 
-        info!("Embedding engine initialized (dim={EMBEDDING_DIM})");
+        info!("Embedding engine initialized (dim={EMBEDDING_DIM}, pool_size={concurrency})");
         Ok(Self {
-            session: std::sync::Arc::new(std::sync::Mutex::new(session)),
+            pool: std::sync::Arc::new(SessionPool::new(sessions)),
             tokenizer: std::sync::Arc::new(tokenizer),
         })
     }
@@ -157,12 +207,13 @@ impl EmbeddingEngine {
         let mut all_embeddings = Vec::with_capacity(texts.len());
 
         for sub_batch in texts.chunks(BATCH_SIZE) {
-            let session_clone = self.session.clone();
+            let pool = self.pool.clone();
+            let (mut session, permit) = pool.acquire().await?;
             let tokenizer_clone = self.tokenizer.clone();
             let owned_sub_batch: Vec<String> = sub_batch.iter().map(|s| s.to_string()).collect();
 
-            let batch_embeddings =
-                tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Vec<f32>>> {
+            let (batch_embeddings, returned_session) = tokio::task::spawn_blocking(
+                move || -> anyhow::Result<(Vec<Vec<f32>>, ort::session::Session)> {
                     let text_refs: Vec<&str> = owned_sub_batch.iter().map(|s| s.as_str()).collect();
                     let inputs = tokenize_and_pad(&tokenizer_clone, &text_refs)?;
 
@@ -178,10 +229,6 @@ impl EmbeddingEngine {
                     let batch_size = inputs.batch_size;
                     let max_seq_len = inputs.max_seq_len;
                     let seq_lens = inputs.seq_lens;
-
-                    let mut session = session_clone
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("session lock poisoned"))?;
 
                     let outputs = session.run(ort::inputs! {
                         "input_ids" => Tensor::from_array((shape, input_ids))?,
@@ -211,10 +258,13 @@ impl EmbeddingEngine {
                         embeddings.push(normalized);
                     }
 
-                    Ok(embeddings)
-                })
-                .await??;
+                    Ok((embeddings, session))
+                },
+            )
+            .await??;
 
+            pool.release(returned_session).await;
+            drop(permit);
             all_embeddings.extend(batch_embeddings);
         }
 
