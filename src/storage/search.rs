@@ -386,18 +386,12 @@ pub(crate) fn build_lexical_query(
     let escaped = escape_fts_query(effective_query);
 
     let processed_query = if mode == LexicalMode::Or {
-        escaped
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" | ")
+        escaped.split_whitespace().collect::<Vec<_>>().join(" | ")
     } else {
         escaped
     };
 
-    Some(combine_filters_and_text(
-        &filters,
-        Some(processed_query),
-    ))
+    Some(combine_filters_and_text(&filters, Some(processed_query)))
 }
 
 pub(crate) fn build_file_query(filepath: &str, codebase_id: Option<&str>) -> String {
@@ -470,10 +464,7 @@ pub(super) async fn hybrid_search_impl(
     )
     .await?;
 
-    let thresholded: Vec<_> = results
-        .into_iter()
-        .filter(|r| r.score < 0.6)
-        .collect();
+    let thresholded: Vec<_> = results.into_iter().filter(|r| r.score < 0.6).collect();
 
     if !thresholded.is_empty() {
         return Ok(thresholded);
@@ -1003,13 +994,8 @@ mod tests {
     }
     #[test]
     fn build_lexical_query_supports_or_mode() {
-        let query = build_lexical_query(
-            "auth user",
-            Some(&Language::Rust),
-            None,
-            LexicalMode::Or,
-        )
-        .unwrap();
+        let query =
+            build_lexical_query("auth user", Some(&Language::Rust), None, LexicalMode::Or).unwrap();
 
         assert_eq!(query, "(@language:{rust} (auth | user))");
     }

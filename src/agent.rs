@@ -46,7 +46,10 @@ impl Planner {
         // Heuristic: if "auth" is mentioned, expand with general identity terms
         if request.query.to_lowercase().contains("auth") {
             steps.push(PlanStep::Search {
-                query: format!("{} authentication authorization login identity", request.query),
+                query: format!(
+                    "{} authentication authorization login identity",
+                    request.query
+                ),
                 language: request.language,
                 limit: 5,
             });
@@ -69,7 +72,10 @@ impl Planner {
             || request.query.to_lowercase().contains("update")
         {
             steps.push(PlanStep::Search {
-                query: format!("{} synchronization incremental full reconcile", request.query),
+                query: format!(
+                    "{} synchronization incremental full reconcile",
+                    request.query
+                ),
                 language: request.language,
                 limit: 5,
             });
