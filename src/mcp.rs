@@ -715,7 +715,10 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
 fn validate_directory_path(path: &str) -> Result<std::path::PathBuf, rmcp::ErrorData> {
     let path = std::path::PathBuf::from(path);
     if !path.exists() {
-        return Err(mcp_error(format!("Directory not found: {}", path.display())));
+        return Err(mcp_error(format!(
+            "Directory not found: {}",
+            path.display()
+        )));
     }
 
     // Canonicalize to resolve .. and symlinks
