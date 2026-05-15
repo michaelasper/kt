@@ -736,8 +736,11 @@ fn validate_directory_path(path: &str) -> Result<std::path::PathBuf, rmcp::Error
     // Basic safety: block root and common system top-level dirs on Unix
     #[cfg(unix)]
     {
-        if canonical == std::path::Path::new("/") {
-            return Err(mcp_error("Access to root directory denied"));
+        if canonical.parent().is_none() {
+            return Err(mcp_error(format!(
+                "Access to root directory denied: {}",
+                canonical.display()
+            )));
         }
 
         let forbidden = ["/bin", "/sbin", "/boot", "/dev", "/root", "/sys", "/proc"];
