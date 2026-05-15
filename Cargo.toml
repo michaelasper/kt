@@ -51,5 +51,6 @@ tree-sitter-javascript = "0.25.0"
 ignored = ["ndarray"]
 
 [features]
-default = []
+default = ["unstable-ort-rc", "agentic-rag"]
 agentic-rag = []
+unstable-ort-rc = []

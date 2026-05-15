@@ -5,6 +5,18 @@ use std::path::Path;
 use tokenizers::Tokenizer;
 use tracing::{debug, info};
 
+#[cfg(not(feature = "unstable-ort-rc"))]
+compile_error!(
+    "The 'ort' dependency is currently a release candidate (2.0.0-rc.12). \
+     To acknowledge this risk and use it, enable the 'unstable-ort-rc' feature. \
+     See issue #47 for details."
+);
+
+/// The `ort` crate is currently pinned to a release candidate.
+/// This is tracked in issue #47.
+#[allow(dead_code)]
+const ORT_RC_STABILITY_WARNING: &str = "ort 2.0.0-rc.12 is in use";
+
 const MODEL_URL: &str =
     "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx";
 const TOKENIZER_URL: &str =
@@ -275,6 +287,13 @@ impl EmbeddingEngine {
 
     pub fn dim(&self) -> usize {
         EMBEDDING_DIM
+    }
+
+    pub fn count_tokens(&self, text: &str) -> usize {
+        self.tokenizer
+            .encode(text, true)
+            .map(|e| e.get_ids().len())
+            .unwrap_or_else(|_| text.split_whitespace().count())
     }
 }
 

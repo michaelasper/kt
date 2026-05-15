@@ -2,7 +2,7 @@ use crate::diagnostics::{DiagnosticEvent, Diagnostics, DiagnosticsArc};
 use crate::embedding::EmbeddingEngine;
 use crate::git;
 use crate::storage::Storage;
-use crate::{Config, Language, QueryRequest, SearchResult};
+use crate::{Config, Language, QueryRequest, QueryResponse, QueryStatus, SearchResult};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, transport::stdio, ServerHandler, ServiceExt};
@@ -670,13 +670,77 @@ impl KtServer {
 
     async fn kt_query_inner(
         &self,
-        _params: QueryRequest,
+        params: QueryRequest,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         self.ensure_ready().await.map_err(mcp_error)?;
 
-        // Stub implementation
-        Err(mcp_error("The Agentic RAG layer is not yet implemented. This tool currently serves as a public contract for future development."))
+        let storage = self.inner.storage.read().await;
+        let embedding_guard = self.inner.embedding.read().await;
+        let engine = embedding_guard
+            .as_ref()
+            .ok_or_else(|| mcp_error("Embedding engine not available"))?;
+
+        let planner = crate::agent::Planner;
+        let plan = planner.plan(&params);
+
+        let executor = crate::agent::AgentExecutor::new(Arc::new(storage.clone()), engine.clone());
+        let response = executor.execute(&params, plan).await;
+
+        let xml = format_query_response(&response);
+        Ok(CallToolResult::success(vec![Content::text(xml)]))
     }
+}
+
+fn format_query_response(response: &QueryResponse) -> String {
+    let status_str = match response.status {
+        QueryStatus::Success => "success",
+        QueryStatus::Partial => "partial",
+        QueryStatus::Failure => "failure",
+    };
+
+    let mut xml = format!(
+        "<query_response status=\"{}\">\n",
+        status_str
+    );
+
+    xml.push_str("  <answer>\n");
+    xml.push_str(&xml_escape(&response.answer));
+    xml.push_str("\n  </answer>\n");
+
+    if !response.evidence.is_empty() {
+        xml.push_str("  <evidence>\n");
+        for citation in &response.evidence {
+            xml.push_str(&format!(
+                "    <citation filepath=\"{}\" start_line=\"{}\" end_line=\"{}\" symbol=\"{}\" />\n",
+                xml_escape(&citation.filepath),
+                citation.start_line.unwrap_or(0),
+                citation.end_line.unwrap_or(0),
+                xml_escape(citation.symbol.as_deref().unwrap_or(""))
+            ));
+        }
+        xml.push_str("  </evidence>\n");
+    }
+
+    if !response.trace.is_empty() {
+        xml.push_str("  <trace>\n");
+        for step in &response.trace {
+            xml.push_str(&format!(
+                "    <step name=\"{}\" query=\"{}\" filepath=\"{}\" results=\"{}\" />\n",
+                xml_escape(&step.name),
+                xml_escape(step.query.as_deref().unwrap_or("")),
+                xml_escape(step.filepath.as_deref().unwrap_or("")),
+                step.results.unwrap_or(0)
+            ));
+        }
+        xml.push_str("  </trace>\n");
+    }
+
+    if let Some(warning) = &response.warning {
+        xml.push_str(&format!("  <warning>{}</warning>\n", xml_escape(warning)));
+    }
+
+    xml.push_str("</query_response>");
+    xml
 }
 
 #[tool_handler]

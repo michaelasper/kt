@@ -54,6 +54,15 @@ Use `kt` when you are doing AI-assisted development on local Rust/Go/Java code a
 
 Avoid `kt` if your stack is not language-aware, or if you cannot run a local Redis Stack service.
 
+## Security & Stability
+
+`kt` uses the `ort` (ONNX Runtime) crate for local embeddings. As of version 0.1.0, this dependency is pinned to a **release candidate** (`2.0.0-rc.12`) to support the latest ONNX Runtime features and performance improvements. 
+
+While this version is recommended by the `ort` maintainers for new projects, it carries a risk of regressions or unpatched security vulnerabilities. 
+
+- This risk is acknowledged via the `unstable-ort-rc` Cargo feature (enabled by default).
+- For more details, see [Issue #47](https://github.com/michaelasper/kt/issues/47).
+
 ## Quick Start
 
 From a clean checkout:
