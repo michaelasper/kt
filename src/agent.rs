@@ -43,30 +43,33 @@ impl Planner {
             limit: 5,
         });
 
-        // Heuristic: if "auth" is mentioned, search for auth symbols
+        // Heuristic: if "auth" is mentioned, expand with general identity terms
         if request.query.to_lowercase().contains("auth") {
             steps.push(PlanStep::Search {
-                query: "authenticate authorize login session token".to_string(),
+                query: format!("{} authentication authorization login identity", request.query),
                 language: request.language,
                 limit: 5,
             });
         }
 
-        // Heuristic: if "storage" or "redis" is mentioned
+        // Heuristic: if "storage" or "data" is mentioned
         if request.query.to_lowercase().contains("storage")
-            || request.query.to_lowercase().contains("redis")
+            || request.query.to_lowercase().contains("data")
+            || request.query.to_lowercase().contains("db")
         {
             steps.push(PlanStep::Search {
-                query: "Redis Storage FT.CREATE index".to_string(),
+                query: format!("{} database persistence cache store", request.query),
                 language: request.language,
                 limit: 5,
             });
         }
 
-        // Heuristic: if "sync" is mentioned
-        if request.query.to_lowercase().contains("sync") {
+        // Heuristic: if "sync" or "update" is mentioned
+        if request.query.to_lowercase().contains("sync")
+            || request.query.to_lowercase().contains("update")
+        {
             steps.push(PlanStep::Search {
-                query: "SyncStrategy SyncPlan execute discover_files".to_string(),
+                query: format!("{} synchronization incremental full reconcile", request.query),
                 language: request.language,
                 limit: 5,
             });
@@ -96,7 +99,10 @@ mod tests {
 
         assert!(plan.steps.len() >= 2);
         match &plan.steps[1] {
-            PlanStep::Search { query, .. } => assert!(query.contains("authenticate")),
+            PlanStep::Search { query, .. } => {
+                assert!(query.contains("authentication"));
+                assert!(query.contains("how does auth work"));
+            }
             _ => panic!("Expected search step"),
         }
     }
@@ -116,7 +122,10 @@ mod tests {
 
         assert!(plan.steps.len() >= 2);
         match &plan.steps[1] {
-            PlanStep::Search { query, .. } => assert!(query.contains("SyncPlan")),
+            PlanStep::Search { query, .. } => {
+                assert!(query.contains("synchronization"));
+                assert!(query.contains("summarize sync"));
+            }
             _ => panic!("Expected search step"),
         }
     }

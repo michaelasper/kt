@@ -349,7 +349,7 @@ pub(crate) fn candidate_limit(top_k: usize) -> usize {
     if top_k == 0 {
         0
     } else {
-        top_k.saturating_mul(5).clamp(25, 100)
+        top_k.saturating_mul(20).clamp(100, 1000)
     }
 }
 
@@ -365,10 +365,17 @@ pub(crate) fn build_semantic_query(
     format!("{base}=>[KNN {candidate_limit} @embedding $query_vec AS vector_score]")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LexicalMode {
+    And,
+    Or,
+}
+
 pub(crate) fn build_lexical_query(
     query_text: &str,
     language: Option<&Language>,
     codebase_id: Option<&str>,
+    mode: LexicalMode,
 ) -> Option<String> {
     let effective_query = query_text.trim();
     if effective_query.is_empty() {
@@ -376,8 +383,21 @@ pub(crate) fn build_lexical_query(
     }
 
     let filters = build_scope_filters(language, codebase_id);
-    let text_query = Some(escape_fts_query(effective_query));
-    Some(combine_filters_and_text(&filters, text_query))
+    let escaped = escape_fts_query(effective_query);
+
+    let processed_query = if mode == LexicalMode::Or {
+        escaped
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" | ")
+    } else {
+        escaped
+    };
+
+    Some(combine_filters_and_text(
+        &filters,
+        Some(processed_query),
+    ))
 }
 
 pub(crate) fn build_file_query(filepath: &str, codebase_id: Option<&str>) -> String {
@@ -417,9 +437,51 @@ pub(super) async fn hybrid_search_impl(
         .flat_map(|f| f.to_le_bytes())
         .collect();
 
-    let semantic_query = build_semantic_query(query_text, language, codebase_id, limit);
-    debug!("Semantic search query: {}", semantic_query);
+    // Stage 1: Strict Hybrid (AND)
+    let results = execute_hybrid_lane(
+        conn,
+        index_name,
+        &embedding_bytes,
+        query_text,
+        language,
+        codebase_id,
+        limit,
+        top_k,
+        LexicalMode::And,
+    )
+    .await?;
 
+    if !results.is_empty() {
+        return Ok(results);
+    }
+
+    // Stage 2: Relaxed Hybrid (OR)
+    debug!("Stage 1 (AND) returned 0 results, falling back to Stage 2 (OR)");
+    let results = execute_hybrid_lane(
+        conn,
+        index_name,
+        &embedding_bytes,
+        query_text,
+        language,
+        codebase_id,
+        limit,
+        top_k,
+        LexicalMode::Or,
+    )
+    .await?;
+
+    let thresholded: Vec<_> = results
+        .into_iter()
+        .filter(|r| r.score < 0.6)
+        .collect();
+
+    if !thresholded.is_empty() {
+        return Ok(thresholded);
+    }
+
+    // Stage 3: Pure Semantic
+    debug!("Stage 2 (OR) returned 0 results, falling back to Stage 3 (Pure Semantic)");
+    let semantic_query = build_semantic_query(query_text, language, codebase_id, limit);
     let semantic_result: redis::Value = cmd("FT.SEARCH")
         .arg(index_name)
         .arg(&semantic_query)
@@ -438,24 +500,65 @@ pub(super) async fn hybrid_search_impl(
         .query_async(conn)
         .await?;
 
-    let semantic_results = parse_search_results(semantic_result)?;
-    let lexical_results =
-        if let Some(lexical_query) = build_lexical_query(query_text, language, codebase_id) {
-            debug!("Lexical search query: {}", lexical_query);
-            let lexical_result: redis::Value = cmd("FT.SEARCH")
-                .arg(index_name)
-                .arg(&lexical_query)
-                .arg("DIALECT")
-                .arg(2)
-                .arg("LIMIT")
-                .arg(0)
-                .arg(limit)
-                .query_async(conn)
-                .await?;
-            parse_search_results(lexical_result)?
-        } else {
-            Vec::new()
-        };
+    let results = parse_search_results(semantic_result)?;
+    Ok(results
+        .into_iter()
+        .filter(|r| r.score < 0.6)
+        .take(top_k)
+        .collect())
+}
+
+async fn execute_hybrid_lane(
+    conn: &mut redis::aio::MultiplexedConnection,
+    index_name: &str,
+    embedding_bytes: &[u8],
+    query_text: &str,
+    language: Option<&Language>,
+    codebase_id: Option<&str>,
+    limit: usize,
+    top_k: usize,
+    mode: LexicalMode,
+) -> anyhow::Result<Vec<SearchResult>> {
+    let semantic_query = build_semantic_query(query_text, language, codebase_id, limit);
+
+    let mut pipe = redis::pipe();
+    pipe.cmd("FT.SEARCH")
+        .arg(index_name)
+        .arg(&semantic_query)
+        .arg("PARAMS")
+        .arg(2)
+        .arg("query_vec")
+        .arg(embedding_bytes)
+        .arg("DIALECT")
+        .arg(2)
+        .arg("SORTBY")
+        .arg("vector_score")
+        .arg("ASC")
+        .arg("LIMIT")
+        .arg(0)
+        .arg(limit);
+    append_search_return_fields_to_pipeline(&mut pipe);
+
+    let lexical_query = build_lexical_query(query_text, language, codebase_id, mode);
+    if let Some(lq) = &lexical_query {
+        pipe.cmd("FT.SEARCH")
+            .arg(index_name)
+            .arg(lq)
+            .arg("DIALECT")
+            .arg(2)
+            .arg("LIMIT")
+            .arg(0)
+            .arg(limit);
+        append_search_return_fields_to_pipeline(&mut pipe);
+    }
+
+    let pipe_results: Vec<redis::Value> = pipe.query_async(conn).await?;
+    let semantic_results = parse_search_results(pipe_results[0].clone())?;
+    let lexical_results = if lexical_query.is_some() {
+        parse_search_results(pipe_results[1].clone())?
+    } else {
+        Vec::new()
+    };
 
     Ok(fuse_search_lanes(semantic_results, lexical_results, top_k))
 }
@@ -657,7 +760,7 @@ pub(super) async fn lookup_chunks_by_name_impl(
 mod tests {
     use super::{
         build_file_query, build_lexical_query, build_semantic_query, candidate_limit,
-        fuse_search_lanes, parse_search_results,
+        fuse_search_lanes, parse_search_results, LexicalMode,
     };
     use crate::storage::index::is_index_not_found_error;
     use crate::{Language, SearchResult};
@@ -878,6 +981,7 @@ mod tests {
             "auth: user-role? (admin)",
             Some(&Language::Rust),
             Some("repo:one"),
+            LexicalMode::And,
         )
         .unwrap();
 
@@ -889,17 +993,35 @@ mod tests {
 
     #[test]
     fn build_lexical_query_skips_empty_text() {
-        assert!(build_lexical_query(" \t\n", Some(&Language::Rust), Some("repo")).is_none());
+        assert!(build_lexical_query(
+            " \t\n",
+            Some(&Language::Rust),
+            Some("repo"),
+            LexicalMode::And
+        )
+        .is_none());
+    }
+    #[test]
+    fn build_lexical_query_supports_or_mode() {
+        let query = build_lexical_query(
+            "auth user",
+            Some(&Language::Rust),
+            None,
+            LexicalMode::Or,
+        )
+        .unwrap();
+
+        assert_eq!(query, "(@language:{rust} (auth | user))");
     }
 
     #[test]
     fn candidate_limit_scales_top_k_and_caps_work() {
         assert_eq!(candidate_limit(0), 0);
-        assert_eq!(candidate_limit(1), 25);
-        assert_eq!(candidate_limit(5), 25);
-        assert_eq!(candidate_limit(10), 50);
-        assert_eq!(candidate_limit(30), 100);
-        assert_eq!(candidate_limit(usize::MAX), 100);
+        assert_eq!(candidate_limit(1), 100);
+        assert_eq!(candidate_limit(5), 100);
+        assert_eq!(candidate_limit(10), 200);
+        assert_eq!(candidate_limit(50), 1000);
+        assert_eq!(candidate_limit(usize::MAX), 1000);
     }
 
     #[test]
