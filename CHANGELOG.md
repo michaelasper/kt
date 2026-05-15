@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## <small>0.9.1 (2026-05-15)</small>
+
+* fix: resolve issues #48, #49, #52, #26 - enhance sync reliability and search escaping ([5d15537](https://github.com/michaelasper/kt/commit/5d15537)), closes [#48](https://github.com/michaelasper/kt/issues/48) [#49](https://github.com/michaelasper/kt/issues/49) [#52](https://github.com/michaelasper/kt/issues/52) [#26](https://github.com/michaelasper/kt/issues/26) [#48](https://github.com/michaelasper/kt/issues/48) [#49](https://github.com/michaelasper/kt/issues/49) [#52](https://github.com/michaelasper/kt/issues/52) [#26](https://github.com/michaelasper/kt/issues/26)
+
 ## 0.9.0 (2026-05-14)
 
 * feat(indexing): add python swift objc markdown html parsers ([189d83a](https://github.com/michaelasper/kt/commit/189d83a))
