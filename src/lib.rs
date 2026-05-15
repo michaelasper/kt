@@ -37,6 +37,9 @@ pub enum Language {
     ObjectiveC,
     Markdown,
     Html,
+    TypeScript,
+    Tsx,
+    Javascript,
 }
 
 impl Language {
@@ -49,6 +52,9 @@ impl Language {
         Self::ObjectiveC,
         Self::Markdown,
         Self::Html,
+        Self::TypeScript,
+        Self::Tsx,
+        Self::Javascript,
     ];
 
     pub fn parse(s: &str) -> Option<Self> {
@@ -77,6 +83,9 @@ impl Language {
             Self::ObjectiveC => "objective-c",
             Self::Markdown => "markdown",
             Self::Html => "html",
+            Self::TypeScript => "typescript",
+            Self::Tsx => "tsx",
+            Self::Javascript => "javascript",
         }
     }
 
@@ -97,6 +106,9 @@ impl Language {
             ],
             Self::Markdown => &["markdown", "md", "mdx"],
             Self::Html => &["html", "htm", "xhtml"],
+            Self::TypeScript => &["typescript", "ts"],
+            Self::Tsx => &["tsx"],
+            Self::Javascript => &["javascript", "js", "jsx"],
         }
     }
 
@@ -110,6 +122,9 @@ impl Language {
             Self::ObjectiveC => &["m", "mm", "h"],
             Self::Markdown => &["md", "markdown", "mdx"],
             Self::Html => &["html", "htm", "xhtml"],
+            Self::TypeScript => &["ts"],
+            Self::Tsx => &["tsx"],
+            Self::Javascript => &["js", "jsx", "mjs", "cjs"],
         }
     }
 
@@ -306,9 +321,9 @@ mod tests {
 
     #[test]
     fn language_parse_rejects_unknown_names() {
-        let error = "typescript".parse::<Language>().unwrap_err();
+        let error = "cobol".parse::<Language>().unwrap_err();
 
-        assert_eq!(error.input(), "typescript");
+        assert_eq!(error.input(), "cobol");
         assert!(error.to_string().contains("Unknown language"));
     }
 

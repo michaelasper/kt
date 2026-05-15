@@ -151,6 +151,55 @@ impl LanguageConfig {
                 container_node_types: &["element"],
                 ts_language: tree_sitter_html::LANGUAGE,
             },
+            Language::TypeScript => Self {
+                language: Language::TypeScript,
+                target_node_types: &[
+                    "class_declaration",
+                    "interface_declaration",
+                    "enum_declaration",
+                    "function_declaration",
+                    "method_definition",
+                    "type_alias_declaration",
+                    "variable_declarator",
+                ],
+                container_node_types: &[
+                    "class_declaration",
+                    "interface_declaration",
+                    "module",
+                    "internal_module",
+                ],
+                ts_language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            },
+            Language::Tsx => Self {
+                language: Language::Tsx,
+                target_node_types: &[
+                    "class_declaration",
+                    "interface_declaration",
+                    "enum_declaration",
+                    "function_declaration",
+                    "method_definition",
+                    "type_alias_declaration",
+                    "variable_declarator",
+                ],
+                container_node_types: &[
+                    "class_declaration",
+                    "interface_declaration",
+                    "module",
+                    "internal_module",
+                ],
+                ts_language: tree_sitter_typescript::LANGUAGE_TSX,
+            },
+            Language::Javascript => Self {
+                language: Language::Javascript,
+                target_node_types: &[
+                    "class_declaration",
+                    "function_declaration",
+                    "method_definition",
+                    "variable_declarator",
+                ],
+                container_node_types: &["class_declaration"],
+                ts_language: tree_sitter_javascript::LANGUAGE,
+            },
         }
     }
 

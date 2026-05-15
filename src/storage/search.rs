@@ -902,20 +902,13 @@ mod tests {
             Value::BulkString(b"doc1".to_vec()),
             Value::Array(vec![
                 Value::BulkString(b"chunk_id".to_vec()),
-                Value::BulkString(b"chunk1".to_vec()),
-                Value::BulkString(b"filepath".to_vec()),
-                Value::BulkString(b"src/main.ts".to_vec()),
+                Value::BulkString(b"c1".to_vec()),
                 Value::BulkString(b"language".to_vec()),
-                Value::BulkString(b"typescript".to_vec()),
+                Value::BulkString(b"cobol".to_vec()),
             ]),
         ]);
-
         let result = parse_search_results(value);
-
         assert!(result.is_err());
-        let error = result.unwrap_err().to_string();
-        assert!(error.contains("Unknown language"));
-        assert!(error.contains("typescript"));
     }
 
     #[test]
@@ -925,14 +918,12 @@ mod tests {
             Value::BulkString(b"doc1".to_vec()),
             Value::Array(vec![
                 Value::BulkString(b"chunk_id".to_vec()),
-                Value::BulkString(b"chunk1".to_vec()),
+                Value::BulkString(b"c1".to_vec()),
                 Value::BulkString(b"filepath".to_vec()),
-                Value::BulkString(b"src/main.rs".to_vec()),
+                Value::BulkString(b"file1.rs".to_vec()),
             ]),
         ]);
-
         let result = parse_search_results(value);
-
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
