@@ -97,33 +97,45 @@ pub(super) async fn remove_file_chunks_impl(
     let query_str = super::search::build_file_query(filepath, codebase_id);
     debug!("Removing chunks for file: {}", query_str);
 
-    let result: redis::Value = cmd("FT.SEARCH")
-        .arg(INDEX_NAME)
-        .arg(&query_str)
-        .arg("DIALECT")
-        .arg(2)
-        .arg("LIMIT")
-        .arg(0)
-        .arg(1000)
-        .arg("RETURN")
-        .arg(1)
-        .arg("chunk_id")
-        .query_async(conn)
-        .await?;
+    let mut total_removed = 0;
+    loop {
+        let result: redis::Value = cmd("FT.SEARCH")
+            .arg(INDEX_NAME)
+            .arg(&query_str)
+            .arg("DIALECT")
+            .arg(2)
+            .arg("LIMIT")
+            .arg(0)
+            .arg(1000)
+            .arg("RETURN")
+            .arg(1)
+            .arg("chunk_id")
+            .query_async(conn)
+            .await?;
 
-    let keys_to_delete = extract_doc_keys(&result);
-    let removed = keys_to_delete.len();
+        let keys_to_delete = extract_doc_keys(&result);
+        if keys_to_delete.is_empty() {
+            break;
+        }
 
-    if !keys_to_delete.is_empty() {
+        let removed_in_batch = keys_to_delete.len();
         let mut pipe = redis::pipe();
         for key in &keys_to_delete {
             pipe.cmd("DEL").arg(key).ignore();
         }
         pipe.query_async::<redis::Value>(conn).await?;
+
+        total_removed += removed_in_batch;
+
+        // If we got fewer than 1000 results, we're likely done with this file.
+        // But the search matches are still valid if more exist, so we loop until empty.
+        if removed_in_batch < 1000 {
+            break;
+        }
     }
 
-    debug!("Removed {removed} chunks for file {filepath}");
-    Ok(removed)
+    debug!("Removed {total_removed} chunks for file {filepath}");
+    Ok(total_removed)
 }
 
 pub(super) async fn store_shadow_chunks_batch_impl(

@@ -15,6 +15,7 @@ pub use search::parse_search_results;
 pub struct Storage {
     client: redis::Client,
     config: Arc<Config>,
+    connection: Arc<tokio::sync::OnceCell<redis::aio::MultiplexedConnection>>,
 }
 
 impl Storage {
@@ -23,22 +24,29 @@ impl Storage {
         Ok(Self {
             client,
             config: Arc::new(config.clone()),
+            connection: Arc::new(tokio::sync::OnceCell::new()),
         })
     }
 
     pub async fn connection(&self) -> anyhow::Result<redis::aio::MultiplexedConnection> {
-        let conn = tokio::time::timeout(
-            self.config.redis_timeout,
-            self.client.get_multiplexed_async_connection(),
-        )
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "Timed out connecting to Redis after {}s",
-                self.config.redis_timeout.as_secs()
-            )
-        })??;
-        Ok(conn)
+        let conn = self
+            .connection
+            .get_or_try_init(|| async {
+                tokio::time::timeout(
+                    self.config.redis_timeout,
+                    self.client.get_multiplexed_async_connection(),
+                )
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "Timed out connecting to Redis after {}s",
+                        self.config.redis_timeout.as_secs()
+                    )
+                })?
+                .map_err(anyhow::Error::from)
+            })
+            .await?;
+        Ok(conn.clone())
     }
 
     pub async fn ensure_index(&self) -> anyhow::Result<()> {

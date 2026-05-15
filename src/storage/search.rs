@@ -279,7 +279,7 @@ fn compare_source_order(a: &SearchResult, b: &SearchResult) -> Ordering {
 }
 
 fn escape_fts_query(query: &str) -> String {
-    let mut result = String::with_capacity(query.len());
+    let mut result = String::with_capacity(query.len() * 2);
     for ch in query.chars() {
         if ch.is_control() {
             continue;
