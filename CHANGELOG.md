@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.10.0 (2026-05-15)
+
+* refactor: satisfy clippy too_many_arguments in search ([4efb52f](https://github.com/michaelasper/kt/commit/4efb52f))
+* style: apply cargo fmt ([e5c885a](https://github.com/michaelasper/kt/commit/e5c885a))
+* feat: enhance search quality and planning robustness ([20c7e32](https://github.com/michaelasper/kt/commit/20c7e32)), closes [#1](https://github.com/michaelasper/kt/issues/1) [#55](https://github.com/michaelasper/kt/issues/55) [#56](https://github.com/michaelasper/kt/issues/56)
+
 ## <small>0.9.1 (2026-05-15)</small>
 
 * fix: resolve issues #48, #49, #52, #26 - enhance sync reliability and search escaping ([5d15537](https://github.com/michaelasper/kt/commit/5d15537)), closes [#48](https://github.com/michaelasper/kt/issues/48) [#49](https://github.com/michaelasper/kt/issues/49) [#52](https://github.com/michaelasper/kt/issues/52) [#26](https://github.com/michaelasper/kt/issues/26) [#48](https://github.com/michaelasper/kt/issues/48) [#49](https://github.com/michaelasper/kt/issues/49) [#52](https://github.com/michaelasper/kt/issues/52) [#26](https://github.com/michaelasper/kt/issues/26)
