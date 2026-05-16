@@ -1,3 +1,8 @@
+use crate::debug_lsp::{
+    append_feedback_record, feedback_path, file_uri_to_path, read_feedback_records,
+    relative_path_for_root, resolve_file_path, DebugFeedbackRecord, DebugFeedbackVerdict,
+    DebugLspManager,
+};
 use crate::diagnostics::{DiagnosticEvent, Diagnostics, DiagnosticsArc};
 use crate::embedding::EmbeddingEngine;
 use crate::git;
@@ -9,6 +14,7 @@ use rmcp::{tool, tool_handler, tool_router, transport::stdio, ServerHandler, Ser
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -35,6 +41,13 @@ impl ToolWarning {
 #[derive(Debug, Clone)]
 pub struct KtServer {
     inner: Arc<KtServerInner>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DebugKtServer {
+    public: KtServer,
+    lsp: Arc<DebugLspManager>,
+    feedback_path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -110,6 +123,88 @@ pub struct IndexPrParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListCodebasesParams {}
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DebugCodebaseParams {
+    #[schemars(description = "Optional directory path to select a codebase root")]
+    pub directory_path: Option<String>,
+    #[schemars(description = "Optional codebase alias to select a codebase root")]
+    pub codebase_alias: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DebugLspPositionParams {
+    #[schemars(description = "Repository-relative or absolute file path")]
+    pub filepath: String,
+    #[schemars(description = "Zero-based line number")]
+    pub line: usize,
+    #[schemars(description = "Zero-based character offset")]
+    pub character: usize,
+    #[schemars(description = "Optional directory path to select a codebase root")]
+    pub directory_path: Option<String>,
+    #[schemars(description = "Optional codebase alias to select a codebase root")]
+    pub codebase_alias: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DebugLspReferencesParams {
+    #[schemars(description = "Repository-relative or absolute file path")]
+    pub filepath: String,
+    #[schemars(description = "Zero-based line number")]
+    pub line: usize,
+    #[schemars(description = "Zero-based character offset")]
+    pub character: usize,
+    #[schemars(description = "Whether to include the symbol declaration in references")]
+    pub include_declaration: Option<bool>,
+    #[schemars(description = "Optional directory path to select a codebase root")]
+    pub directory_path: Option<String>,
+    #[schemars(description = "Optional codebase alias to select a codebase root")]
+    pub codebase_alias: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DebugLspDocumentSymbolsParams {
+    #[schemars(description = "Repository-relative or absolute file path")]
+    pub filepath: String,
+    #[schemars(description = "Optional directory path to select a codebase root")]
+    pub directory_path: Option<String>,
+    #[schemars(description = "Optional codebase alias to select a codebase root")]
+    pub codebase_alias: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DebugChunkAtParams {
+    #[schemars(description = "Repository-relative or absolute file path")]
+    pub filepath: String,
+    #[schemars(description = "Zero-based line number")]
+    pub line: usize,
+    #[schemars(description = "Optional directory path to select a codebase root")]
+    pub directory_path: Option<String>,
+    #[schemars(description = "Optional codebase alias to select a codebase root")]
+    pub codebase_alias: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DebugFeedbackParams {
+    #[schemars(description = "One of: helpful, not_helpful, bug, idea")]
+    pub verdict: String,
+    #[schemars(description = "Short feedback summary")]
+    pub summary: String,
+    #[schemars(description = "Optional scenario being debugged")]
+    pub scenario: Option<String>,
+    #[schemars(description = "Optional evidence for the verdict")]
+    pub evidence: Option<String>,
+    #[schemars(description = "Optional recommendation for kt")]
+    pub recommendation: Option<String>,
+    #[schemars(description = "Optional active tool name that produced the result")]
+    pub active_tool: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DebugFeedbackReadParams {
+    #[schemars(description = "Maximum number of most recent feedback entries to read")]
+    pub limit: Option<usize>,
+}
+
 impl KtServer {
     async fn with_diagnostics<F, Fut, T>(&self, tool_name: &str, f: F) -> Result<T, rmcp::ErrorData>
     where
@@ -169,6 +264,61 @@ impl KtServer {
         }
 
         Ok(())
+    }
+}
+
+impl DebugKtServer {
+    pub fn new(config: Config) -> anyhow::Result<Self> {
+        let public = KtServer::new(config)?;
+        let global_manager = crate::global_config::GlobalConfigManager::new()?;
+        let feedback_path = feedback_path(global_manager.get_config_dir());
+
+        Ok(Self {
+            public,
+            lsp: Arc::new(DebugLspManager::new()),
+            feedback_path,
+        })
+    }
+
+    async fn resolve_debug_root(
+        &self,
+        directory_path: Option<&str>,
+        codebase_alias: Option<&str>,
+    ) -> Result<PathBuf, rmcp::ErrorData> {
+        match (directory_path, codebase_alias) {
+            (Some(path), None) => validate_directory_path(path),
+            (_, Some(_)) => {
+                let storage = self.public.inner.storage.read().await;
+                let codebase = resolve_codebase_selector(&storage, directory_path, codebase_alias)
+                    .await?
+                    .ok_or_else(|| {
+                        mcp_error("directory_path or codebase_alias did not resolve to a codebase")
+                    })?;
+                validate_directory_path(&codebase.root_path)
+            }
+            (None, None) => std::env::current_dir().map_err(mcp_error).and_then(|path| {
+                path.canonicalize()
+                    .map_err(|error| mcp_error(format!("Failed to resolve current dir: {error}")))
+            }),
+        }
+    }
+
+    async fn resolve_debug_codebase(
+        &self,
+        root: &Path,
+        directory_path: Option<&str>,
+        codebase_alias: Option<&str>,
+    ) -> Result<crate::Codebase, rmcp::ErrorData> {
+        if codebase_alias.is_some() {
+            let storage = self.public.inner.storage.read().await;
+            if let Some(codebase) =
+                resolve_codebase_selector(&storage, directory_path, codebase_alias).await?
+            {
+                return Ok(codebase);
+            }
+        }
+
+        crate::Codebase::from_root(root, None).map_err(mcp_error)
     }
 }
 
@@ -708,6 +858,292 @@ impl KtServer {
     }
 }
 
+#[tool_router]
+impl DebugKtServer {
+    #[tool(
+        description = "Search the indexed codebase using hybrid vector + keyword search. Use this to find code by semantic intent (e.g. 'how do we handle passwords') or exact names (e.g. 'BcryptHasher')."
+    )]
+    async fn kt_search(
+        &self,
+        Parameters(params): Parameters<SearchParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.public
+            .with_diagnostics("kt_search", || self.public.kt_search_inner(params))
+            .await
+    }
+
+    #[tool(
+        description = "Read the full contents of a file by its repository-relative path. Bypasses vector search and returns all indexed chunks for the file."
+    )]
+    async fn kt_read_file(
+        &self,
+        Parameters(params): Parameters<ReadFileParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.public
+            .with_diagnostics("kt_read_file", || self.public.kt_read_file_inner(params))
+            .await
+    }
+
+    #[tool(
+        description = "Sync (index) a directory into the knowledge base. Parses all .rs, .go, and .java files using Tree-sitter, generates embeddings, and stores them in Redis for search."
+    )]
+    async fn kt_sync(
+        &self,
+        Parameters(params): Parameters<SyncParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.public
+            .with_diagnostics("kt_sync", || self.public.kt_sync_inner(params))
+            .await
+    }
+
+    #[tool(
+        description = "Get git status information including current branch, commit SHA, and changed files."
+    )]
+    async fn kt_git_status(
+        &self,
+        Parameters(params): Parameters<GitStatusParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.public
+            .with_diagnostics("kt_git_status", || self.public.kt_git_status_inner(params))
+            .await
+    }
+
+    #[tool(
+        description = "Index a pull request or working tree changes into the shadow (ephemeral) index. Only changed files are indexed. Shadow chunks auto-expire after TTL (default: 2 hours)."
+    )]
+    async fn kt_index_pr(
+        &self,
+        Parameters(params): Parameters<IndexPrParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.public
+            .with_diagnostics("kt_index_pr", || self.public.kt_index_pr_inner(params))
+            .await
+    }
+
+    #[tool(
+        description = "List indexed codebases, including codebase_id, alias, root path, last synced commit, and indexed status."
+    )]
+    async fn kt_list_codebases(
+        &self,
+        Parameters(_params): Parameters<ListCodebasesParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.public
+            .with_diagnostics("kt_list_codebases", || {
+                self.public.kt_list_codebases_inner()
+            })
+            .await
+    }
+
+    #[tool(
+        description = "Ask a high-level codebase question. The agentic RAG layer will plan and execute multiple retrieval steps to provide a grounded answer with citations."
+    )]
+    async fn kt_query(
+        &self,
+        Parameters(params): Parameters<QueryRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.public
+            .with_diagnostics("kt_query", || self.public.kt_query_inner(params))
+            .await
+    }
+
+    #[tool(
+        description = "Experimental debug tool: report cached rust-analyzer LSP session status for a selected codebase root."
+    )]
+    async fn _debug_lsp_status(
+        &self,
+        Parameters(params): Parameters<DebugCodebaseParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let root = self
+            .resolve_debug_root(
+                params.directory_path.as_deref(),
+                params.codebase_alias.as_deref(),
+            )
+            .await?;
+        let statuses = self.lsp.status(Some(&root)).await;
+        let xml = format_lsp_status(&root, &statuses);
+        Ok(CallToolResult::success(vec![Content::text(xml)]))
+    }
+
+    #[tool(
+        description = "Experimental debug tool: ask rust-analyzer for the definition at a zero-based position in a Rust file."
+    )]
+    async fn _debug_lsp_definition(
+        &self,
+        Parameters(params): Parameters<DebugLspPositionParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let root = self
+            .resolve_debug_root(
+                params.directory_path.as_deref(),
+                params.codebase_alias.as_deref(),
+            )
+            .await?;
+        let filepath = resolve_file_path(&root, &params.filepath).map_err(mcp_error)?;
+        let result = self
+            .lsp
+            .definition(&root, &filepath, params.line, params.character)
+            .await
+            .map_err(mcp_error)?;
+        let xml = format_lsp_locations(
+            "debug_lsp_definition",
+            &root,
+            &params.filepath,
+            params.line,
+            Some(params.character),
+            &result,
+        );
+        Ok(CallToolResult::success(vec![Content::text(xml)]))
+    }
+
+    #[tool(
+        description = "Experimental debug tool: ask rust-analyzer for references at a zero-based position in a Rust file."
+    )]
+    async fn _debug_lsp_references(
+        &self,
+        Parameters(params): Parameters<DebugLspReferencesParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let root = self
+            .resolve_debug_root(
+                params.directory_path.as_deref(),
+                params.codebase_alias.as_deref(),
+            )
+            .await?;
+        let filepath = resolve_file_path(&root, &params.filepath).map_err(mcp_error)?;
+        let result = self
+            .lsp
+            .references(
+                &root,
+                &filepath,
+                params.line,
+                params.character,
+                params.include_declaration.unwrap_or(true),
+            )
+            .await
+            .map_err(mcp_error)?;
+        let xml = format_lsp_locations(
+            "debug_lsp_references",
+            &root,
+            &params.filepath,
+            params.line,
+            Some(params.character),
+            &result,
+        );
+        Ok(CallToolResult::success(vec![Content::text(xml)]))
+    }
+
+    #[tool(
+        description = "Experimental debug tool: ask rust-analyzer for document symbols in a Rust file."
+    )]
+    async fn _debug_lsp_document_symbols(
+        &self,
+        Parameters(params): Parameters<DebugLspDocumentSymbolsParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let root = self
+            .resolve_debug_root(
+                params.directory_path.as_deref(),
+                params.codebase_alias.as_deref(),
+            )
+            .await?;
+        let filepath = resolve_file_path(&root, &params.filepath).map_err(mcp_error)?;
+        let result = self
+            .lsp
+            .document_symbols(&root, &filepath)
+            .await
+            .map_err(mcp_error)?;
+        let xml = format_lsp_symbols(&root, &params.filepath, &result);
+        Ok(CallToolResult::success(vec![Content::text(xml)]))
+    }
+
+    #[tool(
+        description = "Experimental debug tool: show the indexed kt chunk containing a zero-based line in a file."
+    )]
+    async fn _debug_chunk_at(
+        &self,
+        Parameters(params): Parameters<DebugChunkAtParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let root = self
+            .resolve_debug_root(
+                params.directory_path.as_deref(),
+                params.codebase_alias.as_deref(),
+            )
+            .await?;
+        let codebase = self
+            .resolve_debug_codebase(
+                &root,
+                params.directory_path.as_deref(),
+                params.codebase_alias.as_deref(),
+            )
+            .await?;
+        let relative = relative_path_for_root(&root, &params.filepath).map_err(mcp_error)?;
+        let storage = self.public.inner.storage.read().await;
+        let mut results = storage
+            .read_file_chunks_scoped(&relative, Some(&codebase.codebase_id))
+            .await
+            .map_err(mcp_error)?;
+
+        match storage
+            .read_shadow_file_chunks_scoped(&relative, Some(&codebase.codebase_id))
+            .await
+        {
+            Ok(shadow_results) => results.extend(shadow_results),
+            Err(error) => {
+                warn!(filepath = %relative, error = %error, "Debug chunk shadow read failed")
+            }
+        }
+
+        let results = deduplicate_results(results);
+        let chunk = chunk_at_line(&results, params.line)
+            .ok_or_else(|| mcp_error(format!("No chunk found at {}:{}", relative, params.line)))?;
+        let xml = format_debug_chunk_at(chunk, &relative, params.line);
+        Ok(CallToolResult::success(vec![Content::text(xml)]))
+    }
+
+    #[tool(
+        description = "Experimental debug tool: append agent-written feedback about whether a debug/LSP result helped."
+    )]
+    async fn _debug_feedback(
+        &self,
+        Parameters(params): Parameters<DebugFeedbackParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let verdict = DebugFeedbackVerdict::parse(&params.verdict)
+            .ok_or_else(|| mcp_error("verdict must be one of: helpful, not_helpful, bug, idea"))?;
+        let (git_branch, git_commit) = current_git_identity().await;
+        let record = DebugFeedbackRecord {
+            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            kt_version: env!("CARGO_PKG_VERSION").to_string(),
+            verdict,
+            summary: params.summary,
+            scenario: params.scenario,
+            evidence: params.evidence,
+            recommendation: params.recommendation,
+            active_tool: params.active_tool,
+            git_branch,
+            git_commit,
+        };
+
+        append_feedback_record(&self.feedback_path, &record).map_err(mcp_error)?;
+        let xml = format!(
+            "<debug_feedback path=\"{}\" verdict=\"{}\" timestamp=\"{}\">recorded</debug_feedback>",
+            xml_escape(&self.feedback_path.display().to_string()),
+            record.verdict.as_str(),
+            xml_escape(&record.timestamp)
+        );
+        Ok(CallToolResult::success(vec![Content::text(xml)]))
+    }
+
+    #[tool(
+        description = "Experimental debug tool: read recent agent-written debug feedback entries."
+    )]
+    async fn _debug_feedback_read(
+        &self,
+        Parameters(params): Parameters<DebugFeedbackReadParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let records =
+            read_feedback_records(&self.feedback_path, params.limit).map_err(mcp_error)?;
+        let xml = format_feedback_records(&self.feedback_path, &records);
+        Ok(CallToolResult::success(vec![Content::text(xml)]))
+    }
+}
+
 fn format_query_response(response: &QueryResponse) -> String {
     let status_str = match response.status {
         QueryStatus::Success => "success",
@@ -757,6 +1193,255 @@ fn format_query_response(response: &QueryResponse) -> String {
     xml
 }
 
+fn format_lsp_status(root: &Path, statuses: &[crate::debug_lsp::DebugLspStatus]) -> String {
+    let mut xml = format!(
+        "<debug_lsp_status root_path=\"{}\" cached_sessions=\"{}\">\n",
+        xml_escape(&root.display().to_string()),
+        statuses.len()
+    );
+
+    if statuses.is_empty() {
+        xml.push_str("  <session running=\"false\" />\n");
+    } else {
+        for status in statuses {
+            xml.push_str(&format!(
+                "  <session root_path=\"{}\" analyzer=\"{}\" running=\"{}\" />\n",
+                xml_escape(&status.root_path.display().to_string()),
+                xml_escape(&status.analyzer),
+                status.running
+            ));
+        }
+    }
+
+    xml.push_str("</debug_lsp_status>");
+    xml
+}
+
+fn format_lsp_locations(
+    tag: &str,
+    root: &Path,
+    filepath: &str,
+    line: usize,
+    character: Option<usize>,
+    result: &serde_json::Value,
+) -> String {
+    let mut xml = format!(
+        "<{} root_path=\"{}\" filepath=\"{}\" line=\"{}\" character=\"{}\">\n",
+        tag,
+        xml_escape(&root.display().to_string()),
+        xml_escape(filepath),
+        line,
+        character.unwrap_or(0)
+    );
+
+    append_lsp_locations_xml(&mut xml, root, result);
+    xml.push_str(&format!(
+        "  <raw_json>{}</raw_json>\n",
+        xml_escape(&serde_json::to_string(result).unwrap_or_else(|_| "null".to_string()))
+    ));
+    xml.push_str(&format!("</{}>", tag));
+    xml
+}
+
+fn append_lsp_locations_xml(xml: &mut String, root: &Path, value: &serde_json::Value) {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                append_lsp_locations_xml(xml, root, value);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            let uri = object
+                .get("uri")
+                .or_else(|| object.get("targetUri"))
+                .and_then(serde_json::Value::as_str);
+            let range = object.get("range").or_else(|| object.get("targetRange"));
+            if let (Some(uri), Some(range)) = (uri, range) {
+                append_lsp_location_xml(xml, root, uri, range);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn append_lsp_location_xml(xml: &mut String, root: &Path, uri: &str, range: &serde_json::Value) {
+    let filepath = file_uri_to_path(uri).ok();
+    let relative = filepath
+        .as_ref()
+        .and_then(|path| path.strip_prefix(root).ok())
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .or_else(|| filepath.as_ref().map(|path| path.display().to_string()))
+        .unwrap_or_default();
+
+    let (start_line, start_character, end_line, end_character) = lsp_range_parts(range);
+    xml.push_str(&format!(
+        "  <location uri=\"{}\" filepath=\"{}\" start_line=\"{}\" start_character=\"{}\" end_line=\"{}\" end_character=\"{}\" />\n",
+        xml_escape(uri),
+        xml_escape(&relative),
+        start_line,
+        start_character,
+        end_line,
+        end_character
+    ));
+}
+
+fn format_lsp_symbols(root: &Path, filepath: &str, result: &serde_json::Value) -> String {
+    let mut xml = format!(
+        "<debug_lsp_document_symbols root_path=\"{}\" filepath=\"{}\">\n",
+        xml_escape(&root.display().to_string()),
+        xml_escape(filepath)
+    );
+
+    if let serde_json::Value::Array(symbols) = result {
+        for symbol in symbols {
+            append_lsp_symbol_xml(&mut xml, symbol, 1);
+        }
+    }
+
+    xml.push_str(&format!(
+        "  <raw_json>{}</raw_json>\n",
+        xml_escape(&serde_json::to_string(result).unwrap_or_else(|_| "null".to_string()))
+    ));
+    xml.push_str("</debug_lsp_document_symbols>");
+    xml
+}
+
+fn append_lsp_symbol_xml(xml: &mut String, symbol: &serde_json::Value, depth: usize) {
+    let indent = "  ".repeat(depth);
+    let name = symbol
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let detail = symbol
+        .get("detail")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let kind = symbol
+        .get("kind")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let range = symbol
+        .get("range")
+        .or_else(|| symbol.pointer("/location/range"));
+    let (start_line, start_character, end_line, end_character) =
+        range.map(lsp_range_parts).unwrap_or((0, 0, 0, 0));
+
+    xml.push_str(&format!(
+        "{indent}<symbol name=\"{}\" detail=\"{}\" kind=\"{}\" start_line=\"{}\" start_character=\"{}\" end_line=\"{}\" end_character=\"{}\">\n",
+        xml_escape(name),
+        xml_escape(detail),
+        kind,
+        start_line,
+        start_character,
+        end_line,
+        end_character
+    ));
+
+    if let Some(children) = symbol.get("children").and_then(serde_json::Value::as_array) {
+        for child in children {
+            append_lsp_symbol_xml(xml, child, depth + 1);
+        }
+    }
+
+    xml.push_str(&format!("{indent}</symbol>\n"));
+}
+
+fn lsp_range_parts(range: &serde_json::Value) -> (u64, u64, u64, u64) {
+    let start_line = range
+        .pointer("/start/line")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let start_character = range
+        .pointer("/start/character")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let end_line = range
+        .pointer("/end/line")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let end_character = range
+        .pointer("/end/character")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    (start_line, start_character, end_line, end_character)
+}
+
+fn chunk_at_line(results: &[SearchResult], line: usize) -> Option<&SearchResult> {
+    results
+        .iter()
+        .filter(|result| match (result.start_line, result.end_line) {
+            (Some(start), Some(end)) => start <= line && line <= end,
+            _ => false,
+        })
+        .min_by_key(|result| {
+            let start = result.start_line.unwrap_or(0);
+            let end = result.end_line.unwrap_or(usize::MAX);
+            (end.saturating_sub(start), start, &result.chunk_id)
+        })
+}
+
+fn format_debug_chunk_at(result: &SearchResult, filepath: &str, line: usize) -> String {
+    let line_attrs = match (result.start_line, result.end_line) {
+        (Some(start), Some(end)) => format!(" start_line=\"{}\" end_line=\"{}\"", start, end),
+        _ => String::new(),
+    };
+
+    format!(
+        "<debug_chunk_at filepath=\"{}\" line=\"{}\">\n  <chunk codebase_id=\"{}\" codebase_alias=\"{}\" root_path=\"{}\" type=\"{}\" name=\"{}\" signature=\"{}\"{}>\n    {}\n  </chunk>\n</debug_chunk_at>",
+        xml_escape(filepath),
+        line,
+        xml_escape(&result.codebase_id),
+        xml_escape(result.codebase_alias.as_deref().unwrap_or("")),
+        xml_escape(&result.root_path),
+        xml_escape(&result.node_type),
+        xml_escape(&result.name),
+        xml_escape(&result.signature),
+        line_attrs,
+        xml_escape(&result.content)
+    )
+}
+
+fn format_feedback_records(path: &Path, records: &[DebugFeedbackRecord]) -> String {
+    let mut xml = format!(
+        "<debug_feedback_entries path=\"{}\" count=\"{}\">\n",
+        xml_escape(&path.display().to_string()),
+        records.len()
+    );
+
+    for record in records {
+        xml.push_str(&format!(
+            "  <entry timestamp=\"{}\" verdict=\"{}\" kt_version=\"{}\" active_tool=\"{}\" git_branch=\"{}\" git_commit=\"{}\" scenario=\"{}\">\n    <summary>{}</summary>\n    <evidence>{}</evidence>\n    <recommendation>{}</recommendation>\n  </entry>\n",
+            xml_escape(&record.timestamp),
+            record.verdict.as_str(),
+            xml_escape(&record.kt_version),
+            xml_escape(record.active_tool.as_deref().unwrap_or("")),
+            xml_escape(record.git_branch.as_deref().unwrap_or("")),
+            xml_escape(record.git_commit.as_deref().unwrap_or("")),
+            xml_escape(record.scenario.as_deref().unwrap_or("")),
+            xml_escape(&record.summary),
+            xml_escape(record.evidence.as_deref().unwrap_or("")),
+            xml_escape(record.recommendation.as_deref().unwrap_or(""))
+        ));
+    }
+
+    xml.push_str("</debug_feedback_entries>");
+    xml
+}
+
+async fn current_git_identity() -> (Option<String>, Option<String>) {
+    let root = match std::env::current_dir() {
+        Ok(root) => root,
+        Err(_) => return (None, None),
+    };
+
+    tokio::task::spawn_blocking(move || git::get_git_info(&root))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .map(|info| (info.branch, info.commit_sha))
+        .unwrap_or((None, None))
+}
+
 #[tool_handler]
 impl ServerHandler for KtServer {
     fn get_info(&self) -> ServerInfo {
@@ -770,15 +1455,19 @@ impl ServerHandler for KtServer {
     }
 }
 
+#[tool_handler]
+impl ServerHandler for DebugKtServer {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("kt-debug", env!("CARGO_PKG_VERSION")))
+            .with_instructions(
+                "kt debug mode - public kt tools plus experimental _debug_* tools for rust-analyzer LSP dogfooding and feedback capture. Debug tools are live-only and do not enrich Redis chunks.".to_string(),
+            )
+    }
+}
+
 pub async fn run_server(config: Config) -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .init();
+    init_tracing();
 
     let server = KtServer::new(config)?;
     server.ensure_ready().await?;
@@ -788,6 +1477,29 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
     service.waiting().await?;
 
     Ok(())
+}
+
+pub async fn run_debug_server(config: Config) -> anyhow::Result<()> {
+    init_tracing();
+
+    let server = DebugKtServer::new(config)?;
+
+    info!("Starting kt debug MCP server on stdio");
+    let service = server.serve(stdio()).await?;
+    service.waiting().await?;
+
+    Ok(())
+}
+
+fn init_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into()),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .try_init();
 }
 
 fn validate_directory_path(path: &str) -> Result<std::path::PathBuf, rmcp::ErrorData> {
@@ -1368,5 +2080,18 @@ mod tests {
         assert!(xml.contains(
             "<warning source=\"shadow_index\">Shadow file read failed: redis &lt;down&gt; &amp; retry</warning>"
         ));
+    }
+
+    #[test]
+    fn test_chunk_at_line_selects_narrowest_matching_range() {
+        let results = vec![
+            file_result("outer", Some(10), Some(30)),
+            file_result("inner", Some(12), Some(14)),
+            file_result("other", Some(40), Some(42)),
+        ];
+
+        let chunk = chunk_at_line(&results, 13).unwrap();
+
+        assert_eq!(chunk.chunk_id, "inner");
     }
 }

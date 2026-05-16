@@ -4,6 +4,7 @@ pub mod file_role;
 pub mod agent;
 pub mod codebase;
 pub mod config;
+pub mod debug_lsp;
 pub mod diagnostics;
 pub mod discovery;
 pub mod embedding;

@@ -20,7 +20,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Start the MCP server (stdio transport)
-    Serve,
+    Serve {
+        /// Expose experimental dogfooding debug tools
+        #[arg(long)]
+        debug: bool,
+    },
     /// Index a directory into the knowledge base
     Sync {
         /// Path to the directory to index
@@ -97,10 +101,14 @@ async fn main() -> anyhow::Result<()> {
     };
 
     match cli.command {
-        Commands::Serve => {
+        Commands::Serve { debug } => {
             let config = runtime_config
                 .ok_or_else(|| anyhow::anyhow!("runtime config missing for kt serve"))?;
-            kt::mcp::run_server(config).await?;
+            if debug {
+                kt::mcp::run_debug_server(config).await?;
+            } else {
+                kt::mcp::run_server(config).await?;
+            }
         }
         Commands::Sync {
             directory,
@@ -128,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
 
 impl Commands {
     fn requires_runtime_config(&self) -> bool {
-        matches!(self, Self::Serve | Self::Sync { .. })
+        matches!(self, Self::Serve { .. } | Self::Sync { .. })
     }
 }
 
@@ -448,7 +456,7 @@ mod tests {
     #[test]
     fn only_serve_and_sync_require_runtime_config() {
         let commands = [
-            (Commands::Serve, true),
+            (Commands::Serve { debug: false }, true),
             (
                 Commands::Sync {
                     directory: PathBuf::from("."),
@@ -475,5 +483,12 @@ mod tests {
         for (command, expected) in commands {
             assert_eq!(command.requires_runtime_config(), expected);
         }
+    }
+
+    #[test]
+    fn serve_debug_flag_is_accepted() {
+        let cli = Cli::try_parse_from(["kt", "serve", "--debug"]).unwrap();
+
+        assert!(matches!(cli.command, Commands::Serve { debug: true }));
     }
 }
