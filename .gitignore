@@ -17,3 +17,5 @@
 *.orig
 *.rej
 /.DS_Store
+
+.codex/
