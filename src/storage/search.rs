@@ -242,7 +242,7 @@ pub(crate) fn escape_exact_match(path: &str) -> String {
     for ch in path.chars() {
         match ch {
             '\\' | '"' | '\'' | '(' | ')' | '-' | '!' | '@' | '$' | ':' | '{' | '}' | '[' | ']'
-            | '~' | '%' | '^' | '&' | '#' | '<' | '>' | '|' | ';' | ',' => {
+            | '~' | '%' | '^' | '&' | '#' | '<' | '>' | '|' | ';' | ',' | '*' | '?' => {
                 result.push('\\');
                 result.push(ch);
             }
@@ -1235,6 +1235,13 @@ mod tests {
         let path = "src/auth(main)-v1.rs";
         let escaped = super::escape_exact_match(path);
         assert_eq!(escaped, "src/auth\\(main\\)\\-v1.rs");
+    }
+
+    #[test]
+    fn test_escape_exact_match_escapes_wildcards() {
+        let path = "src/*.rs";
+        let escaped = super::escape_exact_match(path);
+        assert_eq!(escaped, "src/\\*.rs");
     }
 
     #[test]
