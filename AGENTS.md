@@ -10,12 +10,12 @@ A local polyglot codebase RAG via MCP.
 - `src/error.rs` — Centralized `KtError` enum (Redis, Ort, Io, ParseFailed, etc.)
 - `src/discovery.rs` — File walker with ignored directory filtering
 - `src/indexing.rs` — Tree-sitter AST chunker with parent context injection
-- `src/indexing/languages.rs` — Per-language Tree-sitter configs (Rust, Go, Java)
+- `src/indexing/languages.rs` — Per-language Tree-sitter configs (Rust, Go, Java, Python, Swift, Objective-C, Markdown, HTML, TypeScript/TSX, JavaScript)
 - `src/embedding.rs` — ONNX Runtime embedding engine (all-MiniLM-L6-v2, 384-dim)
 - `src/storage/` — Redis CRUD, FT.CREATE index, hybrid vector+BM25 search, shadow index, codebase registry
 - `src/sync.rs` — Shared sync pipeline: `SyncStrategy`, `SyncPlan`, `SyncStats`, `SyncProgress`
 - `src/git.rs` — Git integration via git2 (branch, commit SHA, diff, status)
-- `src/mcp.rs` — MCP server with 6 tools (kt_search, kt_read_file, kt_sync, kt_git_status, kt_index_pr, kt_list_codebases)
+- `src/mcp.rs` — MCP server with 7 public tools (kt_search, kt_read_file, kt_sync, kt_git_status, kt_index_pr, kt_list_codebases, kt_query) plus debug-only LSP/feedback tools when run with `kt serve --debug`
 - `src/mcp_setup.rs` — Interactive MCP harness setup (OpenCode, Claude Desktop, Cline, Continue, Pi)
 - `src/global_config.rs` — Global configuration management (`~/.config/kt/config.json`)
 - `src/sync_ui.rs` — Terminal sync progress UI (pretty + plain modes)
@@ -32,13 +32,13 @@ cargo clippy --all-targets --all-features
 
 ## Using kt
 
-The `kt` MCP server is configured in OpenCode. Use `kt_search` to search all indexed codebases semantically, `kt_read_file` to read file chunks, `kt_sync` to index a directory, `kt_git_status` for branch/commit context, `kt_index_pr` to shadow-index working tree changes, and `kt_list_codebases` to discover indexed roots and aliases.
+The `kt` MCP server is configured in OpenCode. Use `kt_search` to search all indexed codebases semantically, `kt_read_file` to read file chunks, `kt_sync` to index a directory, `kt_git_status` for branch/commit context, `kt_index_pr` to shadow-index working tree changes, `kt_list_codebases` to discover indexed roots and aliases, and `kt_query` for higher-level codebase questions.
 
 **Multi-codebase indexing**: Prefer syncing with an alias, e.g. `kt sync --name kt /Users/michaelasper/source/kt`. By default, `kt_search` searches globally across all indexed codebases. Scope `kt_search` or `kt_read_file` with `codebase_alias` or `directory_path` when you need one repo. Unscoped `kt_read_file` returns grouped matches for that repo-relative filepath across all codebases.
 
 **Partial Sync**: `kt_sync` automatically detects git repositories and only syncs changed files (using git2 to compare commits) or files with modified timestamps (for non-git repos). This makes incremental syncs fast. Use `kt sync --full <dir>` to force a complete re-index.
 
-**Schema v2 migration**: `ensure_index` sets `kt:schema_version = 2` and intentionally drops old non-codebase-scoped `kt:doc:*`, `kt:shadow:*`, and legacy sync-state keys. After upgrading to v2, repositories must be re-synced.
+**Schema v4 migration**: `ensure_index` sets `kt:schema_version = 4` and intentionally drops old `kt:doc:*`, `kt:shadow:*`, codebase registry, alias, and sync-state keys. After upgrading to v4, repositories must be re-synced.
 
 When exploring this codebase, prefer using `kt_search` to find relevant code before reading files directly.
 

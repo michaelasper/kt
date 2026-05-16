@@ -62,7 +62,9 @@ struct KtServerInner {
 pub struct SearchParams {
     #[schemars(description = "The search query - natural language or code terms")]
     pub query: String,
-    #[schemars(description = "Filter by language: rust, go, or java")]
+    #[schemars(
+        description = "Filter by language: rust, go, java, python, swift, objective-c, markdown, html, typescript, tsx, or javascript"
+    )]
     pub language: Option<String>,
     #[schemars(description = "Number of results to return (default: 3, max: 10)")]
     pub top_k: Option<usize>,
@@ -1526,7 +1528,7 @@ impl ServerHandler for KtServer {
         )
         .with_server_info(Implementation::new("kt", env!("CARGO_PKG_VERSION")))
         .with_instructions(
-            "kt (Knowledge Transfer) - A local multi-codebase RAG system. Use kt_search for global semantic code search, kt_read_file to read specific files across codebases, kt_sync to index/update a directory, kt_list_codebases to discover aliases and roots, and kt_query for high-level abstract questions. Scope search/read/query with directory_path or codebase_alias when needed.".to_string(),
+            "kt (Knowledge Transfer) - A local multi-codebase RAG system. Use kt_search for semantic code search, kt_read_file to read specific files across codebases, kt_sync to index/update a directory, kt_git_status for repository status, kt_index_pr for shadow-indexing branch changes, kt_list_codebases to discover aliases and roots, and kt_query for high-level abstract questions. Scope search/read/query with directory_path or codebase_alias when needed.".to_string(),
         )
     }
 }

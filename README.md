@@ -8,7 +8,7 @@
   </picture>
 
   <h1>kt</h1>
-  <p>Search and retrieve local Rust, Go, and Java code with semantic awareness for AI-assisted development.</p>
+  <p>Search and retrieve local polyglot codebases with semantic awareness for AI-assisted development.</p>
 </div>
 
 <div align="center">
@@ -40,17 +40,17 @@ If you want a local, private, MCP-native knowledge layer for code reasoning, thi
 
 ## Features
 
-- Indexes Rust, Go, and Java with Tree-sitter AST chunking and parent-context injection for stronger semantic recall.
+- Indexes Rust, Go, Java, Python, Swift, Objective-C, Markdown, HTML, TypeScript/TSX, and JavaScript with Tree-sitter chunking and parent-context injection for stronger semantic recall.
 - Runs hybrid retrieval in Redis with vector similarity plus BM25 keyword ranking.
 - Stores a codebase registry so multiple repositories can share one Redis corpus while still supporting scoped search by alias or path.
 - Supports branch-aware working sets through a temporary **shadow index** (`kt_git_status`, `kt_index_pr`) so changed files are searchable during PR or draft work.
-- Exposes MCP tools (`kt_search`, `kt_read_file`, `kt_sync`, `kt_list_codebases`) for agent workflows and scriptable code navigation.
+- Exposes MCP tools (`kt_search`, `kt_read_file`, `kt_sync`, `kt_git_status`, `kt_index_pr`, `kt_list_codebases`, `kt_query`) for agent workflows and scriptable code navigation.
 - Embeds code locally with ONNX `all-MiniLM-L6-v2` to keep indexing and inference offline.
 - Adds MCP-facing XML envelopes so results can be parsed safely by agent and automation tooling.
 
 ## When to Use
 
-Use `kt` when you are doing AI-assisted development on local Rust/Go/Java code and want retrieval quality higher than plain grep or raw text search.
+Use `kt` when you are doing AI-assisted development on local polyglot code and want retrieval quality higher than plain grep or raw text search.
 
 Avoid `kt` if your stack is not language-aware, or if you cannot run a local Redis Stack service.
 
@@ -144,7 +144,7 @@ kt sync --name my-repo /path/to/repo
 
 `--name` is optional, but aliases make scoped MCP calls easier. A repository's `codebase_id` is derived from the canonical absolute sync root, so the same alias cannot be assigned to a different path.
 
-Upgrading to the multi-codebase schema migrates Redis to `kt:schema_version = 2`. The migration intentionally drops old `kt:doc:*`, `kt:shadow:*`, and legacy sync-state keys, so repositories must be re-synced after upgrading.
+Upgrading to the current schema migrates Redis to `kt:schema_version = 4`. The migration intentionally drops old `kt:doc:*`, `kt:shadow:*`, codebase registry, alias, and sync-state keys, so repositories must be re-synced after upgrading.
 
 ### Upgrade kt
 
