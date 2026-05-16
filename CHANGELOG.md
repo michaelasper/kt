@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.13.0 (2026-05-16)
+
+* feat: add file_role and calls fields to Redis schema and storage ([369b274](https://github.com/michaelasper/kt/commit/369b274))
+* feat: improve search relevance with file role ranking, boilerplate stripping, and call-context expan ([5e92382](https://github.com/michaelasper/kt/commit/5e92382))
+* test: fix fuse_search_lanes_boosts_implementation_over_test to actually verify boost behavior ([8fe5862](https://github.com/michaelasper/kt/commit/8fe5862))
+
 ## 0.12.0 (2026-05-15)
 
 * test: add unit tests for AgentExecutor and cleanup imports ([0811412](https://github.com/michaelasper/kt/commit/0811412))
