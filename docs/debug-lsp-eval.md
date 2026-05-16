@@ -36,6 +36,11 @@ reported zero cached sessions; after definition/references it reported one runni
 the tool now defaults to returning at most 80 symbol nodes and supports
 `max_symbols = 0` for unlimited output.
 
+The LSP position tools use zero-based coordinates. Use `line = 0` for the first
+line and `character = 0` for the first character in that line; one-based editor
+line numbers need to be adjusted before calling `_debug_lsp_definition`,
+`_debug_lsp_references`, or `_debug_chunk_at`.
+
 `_debug_feedback` and `_debug_feedback_read` work for recording agent impressions.
 The evaluation used a temporary `HOME` so feedback was written under
 `/private/tmp` instead of the real user config directory.

@@ -137,9 +137,11 @@ pub struct DebugCodebaseParams {
 pub struct DebugLspPositionParams {
     #[schemars(description = "Repository-relative or absolute file path")]
     pub filepath: String,
-    #[schemars(description = "Zero-based line number")]
+    #[schemars(description = "Zero-based line number; the first line is 0")]
     pub line: usize,
-    #[schemars(description = "Zero-based character offset")]
+    #[schemars(
+        description = "Zero-based character offset within the line; the first character is 0"
+    )]
     pub character: usize,
     #[schemars(description = "Optional directory path to select a codebase root")]
     pub directory_path: Option<String>,
@@ -151,9 +153,11 @@ pub struct DebugLspPositionParams {
 pub struct DebugLspReferencesParams {
     #[schemars(description = "Repository-relative or absolute file path")]
     pub filepath: String,
-    #[schemars(description = "Zero-based line number")]
+    #[schemars(description = "Zero-based line number; the first line is 0")]
     pub line: usize,
-    #[schemars(description = "Zero-based character offset")]
+    #[schemars(
+        description = "Zero-based character offset within the line; the first character is 0"
+    )]
     pub character: usize,
     #[schemars(description = "Whether to include the symbol declaration in references")]
     pub include_declaration: Option<bool>,
@@ -179,7 +183,7 @@ pub struct DebugLspDocumentSymbolsParams {
 pub struct DebugChunkAtParams {
     #[schemars(description = "Repository-relative or absolute file path")]
     pub filepath: String,
-    #[schemars(description = "Zero-based line number")]
+    #[schemars(description = "Zero-based line number; the first line is 0")]
     pub line: usize,
     #[schemars(description = "Optional directory path to select a codebase root")]
     pub directory_path: Option<String>,
@@ -969,7 +973,7 @@ impl DebugKtServer {
     }
 
     #[tool(
-        description = "Experimental debug tool: ask rust-analyzer for the definition at a zero-based position in a Rust file."
+        description = "Experimental debug tool: ask rust-analyzer for the definition at a zero-based position in a Rust file. Example: use line=0 and character=0 for the first character in the file."
     )]
     async fn _debug_lsp_definition(
         &self,
@@ -999,7 +1003,7 @@ impl DebugKtServer {
     }
 
     #[tool(
-        description = "Experimental debug tool: ask rust-analyzer for references at a zero-based position in a Rust file."
+        description = "Experimental debug tool: ask rust-analyzer for references at a zero-based position in a Rust file. Example: use line=0 and character=0 for the first character in the file."
     )]
     async fn _debug_lsp_references(
         &self,
@@ -1063,7 +1067,7 @@ impl DebugKtServer {
     }
 
     #[tool(
-        description = "Experimental debug tool: show the indexed kt chunk containing a zero-based line in a file."
+        description = "Experimental debug tool: show the indexed kt chunk containing a zero-based line in a file. Example: use line=0 for the first line."
     )]
     async fn _debug_chunk_at(
         &self,
@@ -1102,7 +1106,8 @@ impl DebugKtServer {
         let results = deduplicate_results(results);
         let chunk = chunk_at_line(&results, params.line)
             .ok_or_else(|| mcp_error(format!("No chunk found at {}:{}", relative, params.line)))?;
-        let xml = format_debug_chunk_at(chunk, &relative, params.line);
+        let freshness = read_debug_chunk_freshness(&root, &relative, chunk);
+        let xml = format_debug_chunk_at(chunk, &relative, params.line, &freshness);
         Ok(CallToolResult::success(vec![Content::text(xml)]))
     }
 
@@ -1458,16 +1463,89 @@ fn chunk_at_line(results: &[SearchResult], line: usize) -> Option<&SearchResult>
         })
 }
 
-fn format_debug_chunk_at(result: &SearchResult, filepath: &str, line: usize) -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DebugChunkFreshness {
+    status: &'static str,
+    reason: &'static str,
+}
+
+impl DebugChunkFreshness {
+    fn matched(reason: &'static str) -> Self {
+        Self {
+            status: "matched",
+            reason,
+        }
+    }
+
+    fn mismatch(reason: &'static str) -> Self {
+        Self {
+            status: "mismatch",
+            reason,
+        }
+    }
+
+    fn unknown(reason: &'static str) -> Self {
+        Self {
+            status: "unknown",
+            reason,
+        }
+    }
+}
+
+fn read_debug_chunk_freshness(
+    root: &Path,
+    filepath: &str,
+    result: &SearchResult,
+) -> DebugChunkFreshness {
+    let source_path = root.join(filepath);
+    match std::fs::read_to_string(&source_path) {
+        Ok(source) => assess_debug_chunk_freshness(&source, result),
+        Err(_) => DebugChunkFreshness::unknown("current_source_unreadable"),
+    }
+}
+
+fn assess_debug_chunk_freshness(source: &str, result: &SearchResult) -> DebugChunkFreshness {
+    let (Some(start), Some(end)) = (result.start_line, result.end_line) else {
+        return DebugChunkFreshness::unknown("indexed_chunk_missing_line_range");
+    };
+
+    let lines = source.lines().collect::<Vec<_>>();
+    if start >= lines.len() || end < start {
+        return DebugChunkFreshness::mismatch("indexed_line_range_outside_current_file");
+    }
+
+    let clamped_end = end.min(lines.len().saturating_sub(1));
+    let current_range = lines[start..=clamped_end].join("\n");
+    let current_range = current_range.trim();
+    if current_range.is_empty() {
+        return DebugChunkFreshness::unknown("current_line_range_empty");
+    }
+
+    let indexed_content = result.content.trim();
+    if indexed_content.contains(current_range) || current_range.contains(indexed_content) {
+        return DebugChunkFreshness::matched("indexed_content_matches_current_line_range");
+    }
+
+    DebugChunkFreshness::mismatch("indexed_content_not_found_at_current_line_range")
+}
+
+fn format_debug_chunk_at(
+    result: &SearchResult,
+    filepath: &str,
+    line: usize,
+    freshness: &DebugChunkFreshness,
+) -> String {
     let line_attrs = match (result.start_line, result.end_line) {
         (Some(start), Some(end)) => format!(" start_line=\"{}\" end_line=\"{}\"", start, end),
         _ => String::new(),
     };
 
     format!(
-        "<debug_chunk_at filepath=\"{}\" line=\"{}\">\n  <chunk codebase_id=\"{}\" codebase_alias=\"{}\" root_path=\"{}\" type=\"{}\" name=\"{}\" signature=\"{}\"{}>\n    {}\n  </chunk>\n</debug_chunk_at>",
+        "<debug_chunk_at filepath=\"{}\" line=\"{}\">\n  <freshness status=\"{}\" reason=\"{}\" />\n  <chunk codebase_id=\"{}\" codebase_alias=\"{}\" root_path=\"{}\" type=\"{}\" name=\"{}\" signature=\"{}\"{}>\n    {}\n  </chunk>\n</debug_chunk_at>",
         xml_escape(filepath),
         line,
+        freshness.status,
+        freshness.reason,
         xml_escape(&result.codebase_id),
         xml_escape(result.codebase_alias.as_deref().unwrap_or("")),
         xml_escape(&result.root_path),
@@ -2218,6 +2296,31 @@ mod tests {
 
         assert!(xml.contains("filepath=\"src/lib.rs\""));
         assert!(xml.contains("start_line=\"2\" start_character=\"4\""));
+    }
+
+    #[test]
+    fn test_debug_chunk_freshness_detects_current_source_mismatch() {
+        let result = file_result("stale", Some(0), Some(0));
+
+        let freshness = assess_debug_chunk_freshness("fn current() {}\n", &result);
+        let xml = format_debug_chunk_at(&result, "src/example.rs", 0, &freshness);
+
+        assert!(xml.contains(
+            "<freshness status=\"mismatch\" reason=\"indexed_content_not_found_at_current_line_range\" />"
+        ));
+    }
+
+    #[test]
+    fn test_debug_lsp_schema_describes_zero_based_examples() {
+        let position_schema = schemars::schema_for!(DebugLspPositionParams);
+        let chunk_schema = schemars::schema_for!(DebugChunkAtParams);
+
+        let position_json = serde_json::to_string(&position_schema).unwrap();
+        let chunk_json = serde_json::to_string(&chunk_schema).unwrap();
+
+        assert!(position_json.contains("first line is 0"));
+        assert!(position_json.contains("first character is 0"));
+        assert!(chunk_json.contains("first line is 0"));
     }
 
     #[test]
