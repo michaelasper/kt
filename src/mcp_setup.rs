@@ -378,23 +378,26 @@ impl McpSetup {
             let parts: Vec<&str> = namespace.split('.').collect();
             let mut current = &mut merged;
 
-            for (i, part) in parts.iter().enumerate() {
-                if !current[part].is_object() {
-                    current[part] = json!({});
+            for part in &parts[..parts.len().saturating_sub(1)] {
+                if !current[*part].is_object() {
+                    current[*part] = json!({});
+                }
+                current = &mut current[*part];
+            }
+
+            if let Some(leaf) = parts.last() {
+                if !current[*leaf].is_object() {
+                    current[*leaf] = json!({});
                 }
 
-                if i == parts.len() - 1 {
-                    if let Some(obj) = current[part].as_object_mut() {
-                        if let Some(new_obj) = new.get(part).and_then(|v| v.as_object()) {
-                            for (key, value) in new_obj {
-                                obj.insert(key.clone(), value.clone());
-                            }
+                if let Some(obj) = current[*leaf].as_object_mut() {
+                    if let Some(new_obj) =
+                        value_at_path(new, &parts).and_then(serde_json::Value::as_object)
+                    {
+                        for (key, value) in new_obj {
+                            obj.insert(key.clone(), value.clone());
                         }
                     }
-                } else {
-                    let temp = current[part].take();
-                    current[part] = temp;
-                    current = &mut current[part];
                 }
             }
         } else if let Some(mcp_servers) = new.get("mcpServers") {
@@ -518,6 +521,14 @@ impl McpSetup {
     }
 }
 
+fn value_at_path<'a>(value: &'a Value, parts: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for part in parts {
+        current = current.get(*part)?;
+    }
+    Some(current)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,6 +546,30 @@ mod tests {
             HarnessType::Cline.config_namespace(),
             Some("cline.mcpServers")
         );
+    }
+
+    #[test]
+    fn merge_configs_adds_nested_namespace_server() {
+        let setup = McpSetup::new();
+        let kt_config = json!({
+            "command": "kt",
+            "args": ["serve"]
+        });
+        let formatted = setup.format_config_for_harness(&HarnessType::Cline, &kt_config);
+        let existing = json!({
+            "cline": {
+                "mcpServers": {
+                    "other": {
+                        "command": "other"
+                    }
+                }
+            }
+        });
+
+        let merged = setup.merge_configs(&existing, &formatted, &HarnessType::Cline);
+
+        assert_eq!(merged["cline"]["mcpServers"]["kt"], kt_config);
+        assert_eq!(merged["cline"]["mcpServers"]["other"]["command"], "other");
     }
 
     #[tokio::test]
