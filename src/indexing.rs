@@ -1,4 +1,4 @@
-use crate::{Chunk, FileRole, Language};
+use crate::{CallRef, Chunk, FileRole, Language};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 use tree_sitter::{Node, Parser, Tree};
@@ -177,6 +177,7 @@ fn build_chunk(
     };
 
     let parent_ctx_str = parent_context.as_ref().map(|ctx| ctx.header.clone());
+    let calls = extract_calls_from_node(node, ctx.source, ctx.config);
 
     let chunk_id = Chunk::generate_id(ctx.codebase_id, ctx.relative_path, &name, start_line);
 
@@ -193,7 +194,7 @@ fn build_chunk(
         start_line,
         end_line,
         file_role: ctx.file_role,
-        calls: Vec::new(),
+        calls,
     })
 }
 
@@ -220,6 +221,135 @@ fn extract_container_header(node: Node, source: &str) -> Option<String> {
 
     let lines: Vec<&str> = source.lines().take(start + 3).skip(start).collect();
     Some(lines.join("\n"))
+}
+
+fn extract_calls_from_node(node: Node, source: &str, config: &LanguageConfig) -> Vec<CallRef> {
+    let mut calls = Vec::new();
+    let mut cursor = node.walk();
+
+    fn walk_for_calls(
+        cursor: &mut tree_sitter::TreeCursor,
+        source: &str,
+        config: &LanguageConfig,
+        calls: &mut Vec<CallRef>,
+    ) {
+        let node = cursor.node();
+        if config.call_node_types.contains(&node.kind()) {
+            if let Some(call_ref) = extract_single_call(node, source) {
+                calls.push(call_ref);
+            }
+        }
+
+        if cursor.goto_first_child() {
+            loop {
+                walk_for_calls(cursor, source, config, calls);
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+            cursor.goto_parent();
+        }
+    }
+
+    walk_for_calls(&mut cursor, source, config, &mut calls);
+    calls
+}
+
+fn extract_single_call(node: Node, source: &str) -> Option<CallRef> {
+    match node.kind() {
+        "call_expression" | "method_call_expression" => {
+            let func = node
+                .child_by_field_name("function")
+                .or_else(|| node.child(0));
+            if let Some(func) = func {
+                let text = node_text(func, source);
+                let name = text.trim().to_string();
+                if !name.is_empty() {
+                    if let Some(dot) = text.find('.') {
+                        let receiver = text[..dot].trim().to_string();
+                        let method = text[dot + 1..].trim().to_string();
+                        return Some(CallRef {
+                            name: method,
+                            receiver: Some(receiver),
+                        });
+                    } else if let Some(colons) = text.find("::") {
+                        let receiver = text[..colons].trim().to_string();
+                        let method = text[colons + 2..].trim().to_string();
+                        return Some(CallRef {
+                            name: method,
+                            receiver: Some(receiver),
+                        });
+                    } else {
+                        return Some(CallRef {
+                            name,
+                            receiver: None,
+                        });
+                    }
+                }
+            }
+            None
+        }
+        "method_invocation" => {
+            let name_node = node.child_by_field_name("name");
+            let name = name_node.map(|n| node_text(n, source).trim().to_string());
+            let receiver = node
+                .child_by_field_name("object")
+                .map(|n| node_text(n, source).trim().to_string());
+            name.map(|n| CallRef { name: n, receiver })
+        }
+        "class_instance_creation_expression" => {
+            if let Some(type_node) = node.child_by_field_name("type") {
+                return Some(CallRef {
+                    name: node_text(type_node, source).trim().to_string(),
+                    receiver: None,
+                });
+            }
+            let mut c = node.walk();
+            let type_node = node
+                .children(&mut c)
+                .find(|n| n.kind() == "type_identifier" || n.kind() == "class_type");
+            type_node.map(|n| CallRef {
+                name: node_text(n, source).trim().to_string(),
+                receiver: None,
+            })
+        }
+        "message_expression" => {
+            let text = node_text(node, source);
+            let inner = text.trim_start_matches('[').trim_end_matches(']');
+            let name = inner.split_whitespace().nth(1).unwrap_or("").to_string();
+            let receiver = inner.split_whitespace().next().unwrap_or("").to_string();
+            if !name.is_empty() {
+                Some(CallRef {
+                    name,
+                    receiver: Some(receiver),
+                })
+            } else {
+                None
+            }
+        }
+        "call" => {
+            let func = node.child(0);
+            if let Some(func) = func {
+                let text = node_text(func, source);
+                if let Some(dot) = text.rfind('.') {
+                    let receiver = text[..dot].trim().to_string();
+                    let method_name = text[dot + 1..].trim().to_string();
+                    Some(CallRef {
+                        name: method_name,
+                        receiver: Some(receiver),
+                    })
+                } else {
+                    Some(CallRef {
+                        name: text.trim().to_string(),
+                        receiver: None,
+                    })
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 fn extract_name(node: Node, source: &str) -> String {
@@ -968,7 +1098,13 @@ public record UserDto(String id) {
     #[test]
     fn test_fallback_line_chunks() {
         let source = "line1\nline2\nline3\nline4\n";
-        let chunks = fallback_line_chunks(source, "test.rs", Language::Rust, "test-codebase", FileRole::Implementation);
+        let chunks = fallback_line_chunks(
+            source,
+            "test.rs",
+            Language::Rust,
+            "test-codebase",
+            FileRole::Implementation,
+        );
         assert!(!chunks.is_empty());
         assert_eq!(chunks[0].node_type, "text_block");
     }
@@ -1007,5 +1143,38 @@ public record UserDto(String id) {
         );
 
         assert!(result.is_err(), "Should return Err on file read error");
+    }
+
+    #[test]
+    fn test_extract_calls_from_rust_method_call() {
+        let source = r#"
+fn main() {
+    let result = server.start();
+    let val = create_config();
+}
+"#;
+        let config = LanguageConfig::for_language(Language::Rust);
+        let mut parser = Parser::new();
+        parser.set_language(&config.tree_sitter_language()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+
+        let chunks = extract_chunks(
+            &tree,
+            source,
+            "test.rs",
+            Language::Rust,
+            &config,
+            "test-codebase",
+            FileRole::Implementation,
+        );
+        let main_fn = find_chunk(&chunks, "main");
+        assert!(main_fn
+            .calls
+            .iter()
+            .any(|c| c.name == "start" && c.receiver.as_deref() == Some("server")));
+        assert!(main_fn
+            .calls
+            .iter()
+            .any(|c| c.name == "create_config" && c.receiver.is_none()));
     }
 }

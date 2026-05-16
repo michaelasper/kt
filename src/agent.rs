@@ -156,6 +156,7 @@ impl AgentExecutor {
                             &query,
                             language.as_ref(),
                             codebase_id.as_deref(),
+                            None,
                             limit,
                         )
                         .await

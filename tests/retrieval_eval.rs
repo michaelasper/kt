@@ -70,6 +70,7 @@ pub fn calculate_invoice_total(line_items: &[u64]) -> u64 {
             query,
             Some(&Language::Rust),
             Some(&codebase.codebase_id),
+            None,
             10,
         )
         .await?;

@@ -1,4 +1,4 @@
-use crate::{Chunk, Config, KtError};
+use crate::{Chunk, Config, KtError, Language};
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Tensor;
 use std::path::Path;
@@ -30,13 +30,29 @@ const BATCH_SIZE: usize = 32;
 
 pub(crate) fn chunk_embedding_text(chunk: &Chunk) -> String {
     let mut text = format!(
-        "filepath: {}\nlanguage: {}\nnode_type: {}\nname: {}\nsignature: {}\n",
+        "filepath: {}\nlanguage: {}\nnode_type: {}\nfile_role: {}\nname: {}\nsignature: {}\n",
         chunk.filepath,
         chunk.language.as_str(),
         chunk.node_type,
+        chunk.file_role.as_str(),
         chunk.name,
         chunk.signature
     );
+
+    if !chunk.calls.is_empty() {
+        text.push_str("calls: ");
+        let calls_str = chunk
+            .calls
+            .iter()
+            .map(|c| match &c.receiver {
+                Some(r) => format!("{}::{}", r, c.name),
+                None => c.name.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        text.push_str(&calls_str);
+        text.push('\n');
+    }
 
     if let Some(parent_context) = chunk
         .parent_context
@@ -49,9 +65,90 @@ pub(crate) fn chunk_embedding_text(chunk: &Chunk) -> String {
         text.push('\n');
     }
 
+    let content_for_embedding = strip_boilerplate(&chunk.content, chunk.language);
     text.push_str("content:\n");
-    text.push_str(&chunk.content);
+    text.push_str(&content_for_embedding);
     text
+}
+
+fn strip_boilerplate(content: &str, language: Language) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result_lines = Vec::with_capacity(lines.len());
+    let mut past_header = false;
+
+    for line in lines {
+        let trimmed = line.trim();
+
+        if !past_header {
+            match language {
+                Language::Rust => {
+                    if trimmed.starts_with("use ")
+                        || trimmed.starts_with("use{")
+                        || trimmed.starts_with("extern crate ")
+                        || trimmed.is_empty()
+                    {
+                        continue;
+                    }
+                }
+                Language::Go => {
+                    if trimmed.starts_with("import ")
+                        || trimmed.starts_with("import(")
+                        || trimmed.starts_with("package ")
+                        || trimmed.is_empty()
+                    {
+                        continue;
+                    }
+                }
+                Language::Java => {
+                    if trimmed.starts_with("import ")
+                        || trimmed.starts_with("package ")
+                        || trimmed.is_empty()
+                    {
+                        continue;
+                    }
+                }
+                Language::Python => {
+                    if trimmed.starts_with("import ")
+                        || trimmed.starts_with("from ")
+                        || trimmed.is_empty()
+                    {
+                        continue;
+                    }
+                }
+                Language::Swift => {
+                    if trimmed.starts_with("import ") || trimmed.is_empty() {
+                        continue;
+                    }
+                }
+                Language::ObjectiveC => {
+                    if trimmed.starts_with("#import ")
+                        || trimmed.starts_with("@import ")
+                        || trimmed.is_empty()
+                    {
+                        continue;
+                    }
+                }
+                Language::TypeScript | Language::Tsx | Language::Javascript => {
+                    if trimmed.starts_with("import ")
+                        || trimmed.starts_with("import{")
+                        || trimmed.starts_with("} from")
+                        || trimmed.is_empty()
+                    {
+                        continue;
+                    }
+                }
+                Language::Markdown | Language::Html => {}
+            }
+        }
+
+        if !trimmed.is_empty() {
+            past_header = true;
+        }
+
+        result_lines.push(line);
+    }
+
+    result_lines.join("\n")
 }
 
 struct BatchInputs {
@@ -372,7 +469,7 @@ fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Chunk, FileRole, Language};
+    use crate::{CallRef, Chunk, FileRole, Language};
 
     fn sample_chunk(parent_context: Option<String>) -> Chunk {
         Chunk {
@@ -512,5 +609,60 @@ mod tests {
         for i in 32..40 {
             assert_eq!(inputs.seq_lens[i], long_len);
         }
+    }
+
+    #[test]
+    fn strip_boilerplate_removes_rust_imports() {
+        let content = "use std::collections::HashMap;\nuse anyhow::Result;\n\nfn main() {\n    println!(\"hello\");\n}\n";
+        let stripped = strip_boilerplate(content, Language::Rust);
+        assert!(!stripped.contains("use std"));
+        assert!(!stripped.contains("use anyhow"));
+        assert!(stripped.contains("fn main"));
+    }
+
+    #[test]
+    fn strip_boilerplate_removes_java_imports() {
+        let content = "package com.example;\n\nimport java.util.List;\n\npublic class Main {\n}\n";
+        let stripped = strip_boilerplate(content, Language::Java);
+        assert!(!stripped.contains("package com.example"));
+        assert!(!stripped.contains("import java.util"));
+        assert!(stripped.contains("public class Main"));
+    }
+
+    #[test]
+    fn strip_boilerplate_removes_python_imports() {
+        let content = "import os\nfrom pathlib import Path\n\ndef main():\n    pass\n";
+        let stripped = strip_boilerplate(content, Language::Python);
+        assert!(!stripped.contains("import os"));
+        assert!(!stripped.contains("from pathlib"));
+        assert!(stripped.contains("def main"));
+    }
+
+    #[test]
+    fn strip_boilerplate_preserves_content_after_header() {
+        let content = "use std::io;\n\nfn read() -> String {\n    String::new()\n}\n";
+        let stripped = strip_boilerplate(content, Language::Rust);
+        assert!(stripped.contains("fn read"));
+        assert!(stripped.contains("String::new"));
+    }
+
+    #[test]
+    fn chunk_embedding_text_includes_file_role() {
+        let mut chunk = sample_chunk(None);
+        chunk.file_role = FileRole::Test;
+        chunk.calls = vec![CallRef {
+            name: "setup".to_string(),
+            receiver: Some("Server".to_string()),
+        }];
+        let text = chunk_embedding_text(&chunk);
+        assert!(text.contains("file_role: test"));
+        assert!(text.contains("calls: Server::setup"));
+    }
+
+    #[test]
+    fn chunk_embedding_text_omits_calls_when_empty() {
+        let chunk = sample_chunk(None);
+        let text = chunk_embedding_text(&chunk);
+        assert!(!text.contains("calls:"));
     }
 }

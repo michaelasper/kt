@@ -2,7 +2,7 @@ mod commands;
 mod index;
 mod search;
 
-use crate::{Chunk, Codebase, Config, Language, SearchResult};
+use crate::{Chunk, Codebase, Config, FileRole, Language, SearchResult};
 use redis::cmd;
 use std::collections::HashMap;
 use std::path::Path;
@@ -107,6 +107,7 @@ impl Storage {
         query_embedding: &[f32],
         query_text: &str,
         language: Option<&Language>,
+        file_role: Option<&FileRole>,
         top_k: usize,
     ) -> anyhow::Result<Vec<SearchResult>> {
         let mut conn = self.connection().await?;
@@ -117,6 +118,7 @@ impl Storage {
             query_text,
             language,
             None,
+            file_role,
             top_k,
         )
         .await?;
@@ -131,6 +133,7 @@ impl Storage {
         query_text: &str,
         language: Option<&Language>,
         codebase_id: Option<&str>,
+        file_role: Option<&FileRole>,
         top_k: usize,
     ) -> anyhow::Result<Vec<SearchResult>> {
         let mut conn = self.connection().await?;
@@ -141,6 +144,7 @@ impl Storage {
             query_text,
             language,
             codebase_id,
+            file_role,
             top_k,
         )
         .await?;
@@ -205,6 +209,7 @@ impl Storage {
         query_embedding: &[f32],
         query_text: &str,
         language: Option<&Language>,
+        file_role: Option<&FileRole>,
         top_k: usize,
     ) -> anyhow::Result<Vec<SearchResult>> {
         let mut conn = self.connection().await?;
@@ -216,6 +221,7 @@ impl Storage {
                 query_text,
                 language,
                 None,
+                file_role,
                 top_k,
             )
             .await,
@@ -231,6 +237,7 @@ impl Storage {
         query_text: &str,
         language: Option<&Language>,
         codebase_id: Option<&str>,
+        file_role: Option<&FileRole>,
         top_k: usize,
     ) -> anyhow::Result<Vec<SearchResult>> {
         let mut conn = self.connection().await?;
@@ -242,6 +249,7 @@ impl Storage {
                 query_text,
                 language,
                 codebase_id,
+                file_role,
                 top_k,
             )
             .await,

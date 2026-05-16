@@ -2,7 +2,7 @@ use crate::diagnostics::{DiagnosticEvent, Diagnostics, DiagnosticsArc};
 use crate::embedding::EmbeddingEngine;
 use crate::git;
 use crate::storage::Storage;
-use crate::{Config, Language, QueryRequest, QueryResponse, QueryStatus, SearchResult};
+use crate::{Config, FileRole, Language, QueryRequest, QueryResponse, QueryStatus, SearchResult};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, transport::stdio, ServerHandler, ServiceExt};
@@ -61,6 +61,10 @@ pub struct SearchParams {
     pub directory_path: Option<String>,
     #[schemars(description = "Optional codebase alias to scope search to one indexed codebase")]
     pub codebase_alias: Option<String>,
+    #[schemars(
+        description = "Filter by file role: implementation, test, fixture, generated, config"
+    )]
+    pub file_role: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -193,6 +197,7 @@ impl KtServer {
         let top_k = params.top_k.unwrap_or(3).min(10);
         let headers_only = params.headers_only.unwrap_or(false);
         let language = params.language.as_deref().and_then(Language::parse);
+        let file_role = params.file_role.as_deref().and_then(FileRole::parse);
 
         let embedding_guard = self.inner.embedding.read().await;
         let engine = embedding_guard
@@ -217,6 +222,7 @@ impl KtServer {
                 &params.query,
                 language.as_ref(),
                 codebase_id,
+                file_role.as_ref(),
                 top_k,
             )
             .await
@@ -229,6 +235,7 @@ impl KtServer {
                 &params.query,
                 language.as_ref(),
                 codebase_id,
+                file_role.as_ref(),
                 top_k,
             )
             .await
@@ -263,8 +270,16 @@ impl KtServer {
             .await;
 
         let one_hop = resolve_one_hop_context(&storage, &results).await;
+        let related = resolve_call_context(&results, &storage, codebase_id).await;
 
-        let xml = format_search_results(&results, &params.query, headers_only, &one_hop, &warnings);
+        let xml = format_search_results(
+            &results,
+            &params.query,
+            headers_only,
+            &one_hop,
+            &related,
+            &warnings,
+        );
         Ok(CallToolResult::success(vec![Content::text(xml)]))
     }
 
@@ -918,6 +933,47 @@ async fn resolve_one_hop_context(
     context_map
 }
 
+async fn resolve_call_context(
+    results: &[SearchResult],
+    storage: &Storage,
+    codebase_id: Option<&str>,
+) -> Vec<SearchResult> {
+    let max_related = 2;
+    let result_names: HashSet<String> = results.iter().map(|r| r.name.clone()).collect();
+
+    let mut call_names: Vec<String> = Vec::new();
+    for result in results {
+        for call in &result.calls {
+            if !result_names.contains(&call.name) && !call_names.contains(&call.name) {
+                call_names.push(call.name.clone());
+            }
+        }
+    }
+
+    if call_names.len() > 5 {
+        call_names.truncate(5);
+    }
+
+    if call_names.is_empty() {
+        return Vec::new();
+    }
+
+    match storage
+        .lookup_chunks_by_name_scoped(&call_names, codebase_id)
+        .await
+    {
+        Ok(related) => related
+            .into_iter()
+            .filter(|r| !result_names.contains(&r.name))
+            .take(max_related)
+            .collect(),
+        Err(e) => {
+            tracing::warn!("Failed to resolve call context for {:?}: {e}", call_names);
+            Vec::new()
+        }
+    }
+}
+
 fn extract_parent_type_name(context: &str) -> Option<String> {
     for line in context.lines() {
         let trimmed = line.trim();
@@ -1019,6 +1075,7 @@ fn format_search_results(
     query: &str,
     headers_only: bool,
     one_hop: &std::collections::HashMap<(String, String), SearchResult>,
+    related: &[SearchResult],
     warnings: &[ToolWarning],
 ) -> String {
     let mut xml = format!("<search_results query=\"{}\">\n", xml_escape(query));
@@ -1066,6 +1123,19 @@ fn format_search_results(
             break;
         }
         xml.push_str(&chunk_xml);
+    }
+    if !related.is_empty() {
+        xml.push_str("  <related_chunks>\n");
+        for rc in related {
+            xml.push_str(&format!(
+                "    <chunk name=\"{}\" filepath=\"{}\" signature=\"{}\" score=\"{}\" />\n",
+                xml_escape(&rc.name),
+                xml_escape(&rc.filepath),
+                xml_escape(&rc.signature),
+                rc.score,
+            ));
+        }
+        xml.push_str("  </related_chunks>\n");
     }
     xml.push_str("</search_results>");
     xml
@@ -1174,6 +1244,7 @@ mod tests {
             start_line: None,
             end_line: None,
             file_role: crate::FileRole::Implementation,
+            calls: Vec::new(),
         }
     }
 
@@ -1198,6 +1269,7 @@ mod tests {
             start_line,
             end_line,
             file_role: crate::FileRole::Implementation,
+            calls: Vec::new(),
         }
     }
 
@@ -1261,7 +1333,8 @@ mod tests {
         let results = vec![sample_result("result", 0.1)];
         let one_hop = std::collections::HashMap::new();
 
-        let xml = format_search_results(&results, "query", false, &one_hop, &[]);
+        let related: Vec<SearchResult> = Vec::new();
+        let xml = format_search_results(&results, "query", false, &one_hop, &related, &[]);
 
         assert!(xml.contains("codebase_id=\"codebase-a\""));
         assert!(xml.contains("codebase_alias=\"alpha\""));
@@ -1272,11 +1345,12 @@ mod tests {
     #[test]
     fn test_format_search_results_emits_shadow_warnings() {
         let one_hop = std::collections::HashMap::new();
+        let related: Vec<SearchResult> = Vec::new();
         let warnings = vec![ToolWarning::shadow_index(
             "Shadow search failed: redis <down> & retry",
         )];
 
-        let xml = format_search_results(&[], "query", false, &one_hop, &warnings);
+        let xml = format_search_results(&[], "query", false, &one_hop, &related, &warnings);
 
         assert!(xml.contains(
             "<warning source=\"shadow_index\">Shadow search failed: redis &lt;down&gt; &amp; retry</warning>"

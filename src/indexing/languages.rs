@@ -7,6 +7,7 @@ pub struct LanguageConfig {
     pub language: Language,
     pub target_node_types: &'static [&'static str],
     pub container_node_types: &'static [&'static str],
+    pub call_node_types: &'static [&'static str],
     ts_language: LanguageFn,
 }
 
@@ -39,6 +40,7 @@ impl LanguageConfig {
                     "foreign_mod_item",
                 ],
                 container_node_types: &["impl_item", "trait_item", "mod_item"],
+                call_node_types: &["call_expression", "method_call_expression"],
                 ts_language: tree_sitter_rust::LANGUAGE,
             },
             Language::Go => Self {
@@ -49,6 +51,7 @@ impl LanguageConfig {
                     "type_declaration",
                 ],
                 container_node_types: &["type_declaration"],
+                call_node_types: &["call_expression"],
                 ts_language: tree_sitter_go::LANGUAGE,
             },
             Language::Java => Self {
@@ -69,12 +72,14 @@ impl LanguageConfig {
                     "record_declaration",
                     "annotation_type_declaration",
                 ],
+                call_node_types: &["method_invocation", "class_instance_creation_expression"],
                 ts_language: tree_sitter_java::LANGUAGE,
             },
             Language::Python => Self {
                 language: Language::Python,
                 target_node_types: &["class_definition", "function_definition"],
                 container_node_types: &["class_definition"],
+                call_node_types: &["call"],
                 ts_language: tree_sitter_python::LANGUAGE,
             },
             Language::Swift => Self {
@@ -98,6 +103,7 @@ impl LanguageConfig {
                     "protocol_declaration",
                     "extension_declaration",
                 ],
+                call_node_types: &["call_expression"],
                 ts_language: tree_sitter_swift::LANGUAGE,
             },
             Language::ObjectiveC => Self {
@@ -121,6 +127,7 @@ impl LanguageConfig {
                     "class_declaration",
                     "protocol_declaration",
                 ],
+                call_node_types: &["message_expression"],
                 ts_language: tree_sitter_objc::LANGUAGE,
             },
             Language::Markdown => Self {
@@ -137,6 +144,7 @@ impl LanguageConfig {
                     "block_quote",
                 ],
                 container_node_types: &["section", "block_quote", "list_item"],
+                call_node_types: &[],
                 ts_language: tree_sitter_md_025::LANGUAGE,
             },
             Language::Html => Self {
@@ -149,6 +157,7 @@ impl LanguageConfig {
                     "comment",
                 ],
                 container_node_types: &["element"],
+                call_node_types: &[],
                 ts_language: tree_sitter_html::LANGUAGE,
             },
             Language::TypeScript => Self {
@@ -168,6 +177,7 @@ impl LanguageConfig {
                     "module",
                     "internal_module",
                 ],
+                call_node_types: &["call_expression"],
                 ts_language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
             },
             Language::Tsx => Self {
@@ -187,6 +197,7 @@ impl LanguageConfig {
                     "module",
                     "internal_module",
                 ],
+                call_node_types: &["call_expression"],
                 ts_language: tree_sitter_typescript::LANGUAGE_TSX,
             },
             Language::Javascript => Self {
@@ -198,6 +209,7 @@ impl LanguageConfig {
                     "variable_declarator",
                 ],
                 container_node_types: &["class_declaration"],
+                call_node_types: &["call_expression"],
                 ts_language: tree_sitter_javascript::LANGUAGE,
             },
         }

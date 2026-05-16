@@ -85,6 +85,7 @@ async fn run_fixture_eval(fixture: EvalFixture) -> anyhow::Result<Vec<EvalResult
                 &eval_query.query,
                 None, // Auto-detect
                 Some(&codebase.codebase_id),
+                None,
                 10,
             )
             .await?;

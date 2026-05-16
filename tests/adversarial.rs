@@ -1,6 +1,6 @@
 use kt::config::Config;
 use kt::storage::Storage;
-use kt::{Chunk, FileRole, Language};
+use kt::{CallRef, Chunk, FileRole, Language};
 
 async fn make_storage() -> Storage {
     let config = Config::from_env();
@@ -12,7 +12,9 @@ async fn make_storage() -> Storage {
 #[tokio::test]
 async fn test_empty_query() {
     let storage = make_storage().await;
-    let result = storage.hybrid_search(&vec![0.0f32; 384], "", None, 3).await;
+    let result = storage
+        .hybrid_search(&vec![0.0f32; 384], "", None, None, 3)
+        .await;
     match result {
         Ok(results) => {
             assert!(results.len() <= 3, "empty query should respect top_k");
@@ -26,7 +28,7 @@ async fn test_empty_query() {
 async fn test_whitespace_only_query() {
     let storage = make_storage().await;
     let result = storage
-        .hybrid_search(&vec![0.0f32; 384], "   \t\n  ", None, 3)
+        .hybrid_search(&vec![0.0f32; 384], "   \t\n  ", None, None, 3)
         .await;
     match result {
         Ok(results) => eprintln!("PASS: whitespace query returned {} results", results.len()),
@@ -38,7 +40,7 @@ async fn test_whitespace_only_query() {
 async fn test_zero_top_k() {
     let storage = make_storage().await;
     let result = storage
-        .hybrid_search(&vec![0.0f32; 384], "function", None, 0)
+        .hybrid_search(&vec![0.0f32; 384], "function", None, None, 0)
         .await;
     match result {
         Ok(results) => {
@@ -53,7 +55,7 @@ async fn test_zero_top_k() {
 async fn test_huge_top_k() {
     let storage = make_storage().await;
     let result = storage
-        .hybrid_search(&vec![0.0f32; 384], "function", None, 10000)
+        .hybrid_search(&vec![0.0f32; 384], "function", None, None, 10000)
         .await;
     match result {
         Ok(results) => eprintln!("PASS: huge top_k returned {} results", results.len()),
@@ -84,7 +86,9 @@ async fn test_special_chars_in_query() {
         "query[with]brackets",
     ];
     for q in nasty_queries {
-        let result = storage.hybrid_search(&vec![0.0f32; 384], q, None, 3).await;
+        let result = storage
+            .hybrid_search(&vec![0.0f32; 384], q, None, None, 3)
+            .await;
         match result {
             Ok(results) => {
                 let display = &q[..q.len().min(40)];
@@ -166,7 +170,13 @@ async fn test_read_empty_path() {
 async fn test_language_filter() {
     let storage = make_storage().await;
     let result = storage
-        .hybrid_search(&vec![0.0f32; 384], "function", Some(&kt::Language::Rust), 3)
+        .hybrid_search(
+            &vec![0.0f32; 384],
+            "function",
+            Some(&kt::Language::Rust),
+            None,
+            3,
+        )
         .await;
     match result {
         Ok(results) => {
@@ -191,7 +201,7 @@ async fn test_long_query() {
     let storage = make_storage().await;
     let long_query = "x".repeat(100_000);
     let result = storage
-        .hybrid_search(&vec![0.0f32; 384], &long_query, None, 3)
+        .hybrid_search(&vec![0.0f32; 384], &long_query, None, None, 3)
         .await;
     match result {
         Ok(results) => eprintln!("PASS: 100k char query returned {} results", results.len()),
@@ -235,7 +245,9 @@ async fn test_unicode_query() {
         "\u{4f60}\u{597d}",
     ];
     for q in unicode_queries {
-        let result = storage.hybrid_search(&vec![0.0f32; 384], q, None, 3).await;
+        let result = storage
+            .hybrid_search(&vec![0.0f32; 384], q, None, None, 3)
+            .await;
         match result {
             Ok(results) => eprintln!(
                 "PASS: unicode query {:?} returned {} results",
@@ -556,4 +568,128 @@ async fn test_concurrent_codebase_alias_registration_allows_only_one_owner() {
         "registry must not contain duplicate codebase hashes with the same alias"
     );
     assert_eq!(aliases[0].codebase_id, successful_ids[0]);
+}
+
+#[tokio::test]
+async fn test_file_role_stored_and_retrieved() {
+    let storage = make_storage().await;
+    let suffix = fastrand::u64(..);
+    let codebase_id = format!("test-file-role-{suffix}");
+    let filepath = format!("tests/fixtures/file_role_{suffix}.rs");
+
+    let chunks = vec![
+        Chunk {
+            chunk_id: Chunk::generate_id(&codebase_id, &filepath, "impl_fn", 0),
+            codebase_id: codebase_id.clone(),
+            filepath: filepath.clone(),
+            language: Language::Rust,
+            node_type: "function".to_string(),
+            name: "impl_fn".to_string(),
+            signature: "fn impl_fn()".to_string(),
+            content: "fn impl_fn() {}".to_string(),
+            parent_context: None,
+            start_line: 0,
+            end_line: 4,
+            file_role: FileRole::Implementation,
+            calls: Vec::new(),
+        },
+        Chunk {
+            chunk_id: Chunk::generate_id(&codebase_id, &filepath, "test_fn", 10),
+            codebase_id: codebase_id.clone(),
+            filepath: filepath.clone(),
+            language: Language::Rust,
+            node_type: "function".to_string(),
+            name: "test_fn".to_string(),
+            signature: "fn test_fn()".to_string(),
+            content: "fn test_fn() {}".to_string(),
+            parent_context: None,
+            start_line: 10,
+            end_line: 14,
+            file_role: FileRole::Test,
+            calls: Vec::new(),
+        },
+    ];
+    let embeddings = vec![vec![0.0f32; 384]; chunks.len()];
+
+    storage
+        .store_chunks_batch(&chunks, &embeddings, None)
+        .await
+        .unwrap();
+
+    let results = storage
+        .read_file_chunks_scoped(&filepath, Some(&codebase_id))
+        .await
+        .unwrap();
+
+    let impl_result = results.iter().find(|r| r.name == "impl_fn").unwrap();
+    assert_eq!(impl_result.file_role, FileRole::Implementation);
+
+    let test_result = results.iter().find(|r| r.name == "test_fn").unwrap();
+    assert_eq!(test_result.file_role, FileRole::Test);
+
+    storage
+        .remove_file_chunks_scoped(&codebase_id, &filepath)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_calls_stored_and_retrieved() {
+    let storage = make_storage().await;
+    let suffix = fastrand::u64(..);
+    let codebase_id = format!("test-calls-{suffix}");
+    let filepath = format!("tests/fixtures/calls_{suffix}.rs");
+
+    let chunks = vec![Chunk {
+        chunk_id: Chunk::generate_id(&codebase_id, &filepath, "caller_fn", 0),
+        codebase_id: codebase_id.clone(),
+        filepath: filepath.clone(),
+        language: Language::Rust,
+        node_type: "function".to_string(),
+        name: "caller_fn".to_string(),
+        signature: "fn caller_fn()".to_string(),
+        content: "fn caller_fn() {}\n    setup();\n    server.start();\n".to_string(),
+        parent_context: None,
+        start_line: 0,
+        end_line: 4,
+        file_role: FileRole::Implementation,
+        calls: vec![
+            CallRef {
+                name: "setup".to_string(),
+                receiver: None,
+            },
+            CallRef {
+                name: "start".to_string(),
+                receiver: Some("server".to_string()),
+            },
+        ],
+    }];
+    let embeddings = vec![vec![0.0f32; 384]; chunks.len()];
+
+    storage
+        .store_chunks_batch(&chunks, &embeddings, None)
+        .await
+        .unwrap();
+
+    let results = storage
+        .read_file_chunks_scoped(&filepath, Some(&codebase_id))
+        .await
+        .unwrap();
+    assert_eq!(results.len(), 1);
+
+    let caller = &results[0];
+    assert_eq!(caller.name, "caller_fn");
+    assert!(caller
+        .calls
+        .iter()
+        .any(|c| c.name == "setup" && c.receiver.is_none()));
+    assert!(caller
+        .calls
+        .iter()
+        .any(|c| c.name == "start" && c.receiver.as_deref() == Some("server")));
+
+    storage
+        .remove_file_chunks_scoped(&codebase_id, &filepath)
+        .await
+        .unwrap();
 }

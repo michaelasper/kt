@@ -61,9 +61,7 @@ impl FileRole {
             return true;
         }
         match language {
-            Language::Rust => {
-                filename.ends_with("_test.rs") || path_lower.contains("/tests/")
-            }
+            Language::Rust => filename.ends_with("_test.rs"),
             Language::Go => filename.ends_with("_test.go"),
             Language::Java => {
                 filename.ends_with("test.java")
@@ -143,65 +141,125 @@ mod tests {
 
     #[test]
     fn test_rust_test_file() {
-        assert_eq!(FileRole::detect("src/foo_test.rs", Language::Rust), FileRole::Test);
-        assert_eq!(FileRole::detect("src/tests/integration.rs", Language::Rust), FileRole::Test);
+        assert_eq!(
+            FileRole::detect("src/foo_test.rs", Language::Rust),
+            FileRole::Test
+        );
+        assert_eq!(
+            FileRole::detect("src/tests/integration.rs", Language::Rust),
+            FileRole::Test
+        );
     }
 
     #[test]
     fn test_java_test_file() {
-        assert_eq!(FileRole::detect("src/test/java/com/example/UserTest.java", Language::Java), FileRole::Test);
-        assert_eq!(FileRole::detect("src/main/java/com/example/User.java", Language::Java), FileRole::Implementation);
+        assert_eq!(
+            FileRole::detect("src/test/java/com/example/UserTest.java", Language::Java),
+            FileRole::Test
+        );
+        assert_eq!(
+            FileRole::detect("src/main/java/com/example/User.java", Language::Java),
+            FileRole::Implementation
+        );
     }
 
     #[test]
     fn test_go_test_file() {
-        assert_eq!(FileRole::detect("handler_test.go", Language::Go), FileRole::Test);
-        assert_eq!(FileRole::detect("handler.go", Language::Go), FileRole::Implementation);
+        assert_eq!(
+            FileRole::detect("handler_test.go", Language::Go),
+            FileRole::Test
+        );
+        assert_eq!(
+            FileRole::detect("handler.go", Language::Go),
+            FileRole::Implementation
+        );
     }
 
     #[test]
     fn test_python_test_file() {
-        assert_eq!(FileRole::detect("tests/test_auth.py", Language::Python), FileRole::Test);
-        assert_eq!(FileRole::detect("auth/__tests__/test_login.py", Language::Python), FileRole::Test);
+        assert_eq!(
+            FileRole::detect("tests/test_auth.py", Language::Python),
+            FileRole::Test
+        );
+        assert_eq!(
+            FileRole::detect("auth/__tests__/test_login.py", Language::Python),
+            FileRole::Test
+        );
     }
 
     #[test]
     fn test_typescript_test_file() {
-        assert_eq!(FileRole::detect("app/login.test.ts", Language::TypeScript), FileRole::Test);
-        assert_eq!(FileRole::detect("app/login.spec.tsx", Language::Tsx), FileRole::Test);
+        assert_eq!(
+            FileRole::detect("app/login.test.ts", Language::TypeScript),
+            FileRole::Test
+        );
+        assert_eq!(
+            FileRole::detect("app/login.spec.tsx", Language::Tsx),
+            FileRole::Test
+        );
     }
 
     #[test]
     fn test_generated_file() {
-        assert_eq!(FileRole::detect("api.pb.go", Language::Go), FileRole::Generated);
-        assert_eq!(FileRole::detect("foo_pb2.py", Language::Python), FileRole::Generated);
+        assert_eq!(
+            FileRole::detect("api.pb.go", Language::Go),
+            FileRole::Generated
+        );
+        assert_eq!(
+            FileRole::detect("foo_pb2.py", Language::Python),
+            FileRole::Generated
+        );
     }
 
     #[test]
     fn test_fixture_path() {
-        assert_eq!(FileRole::detect("tests/fixtures/data.json", Language::Python), FileRole::Fixture);
+        assert_eq!(
+            FileRole::detect("tests/fixtures/data.json", Language::Python),
+            FileRole::Fixture
+        );
     }
 
     #[test]
     fn test_implementation_default() {
-        assert_eq!(FileRole::detect("src/main.rs", Language::Rust), FileRole::Implementation);
-        assert_eq!(FileRole::detect("lib.rs", Language::Rust), FileRole::Implementation);
+        assert_eq!(
+            FileRole::detect("src/main.rs", Language::Rust),
+            FileRole::Implementation
+        );
+        assert_eq!(
+            FileRole::detect("lib.rs", Language::Rust),
+            FileRole::Implementation
+        );
     }
 
     #[test]
     fn test_swift_test_file() {
-        assert_eq!(FileRole::detect("MyApp/Tests/MyAppTests.swift", Language::Swift), FileRole::Test);
+        assert_eq!(
+            FileRole::detect("MyApp/Tests/MyAppTests.swift", Language::Swift),
+            FileRole::Test
+        );
     }
 
     #[test]
     fn test_config_file() {
-        assert_eq!(FileRole::detect("app.config.rs", Language::Rust), FileRole::Config);
-        assert_eq!(FileRole::detect("src/config/settings.rs", Language::Rust), FileRole::Config);
+        assert_eq!(
+            FileRole::detect("app.config.rs", Language::Rust),
+            FileRole::Config
+        );
+        assert_eq!(
+            FileRole::detect("src/config/settings.rs", Language::Rust),
+            FileRole::Config
+        );
     }
 
     #[test]
     fn test_parse_roundtrip() {
-        for role in [FileRole::Implementation, FileRole::Test, FileRole::Fixture, FileRole::Generated, FileRole::Config] {
+        for role in [
+            FileRole::Implementation,
+            FileRole::Test,
+            FileRole::Fixture,
+            FileRole::Generated,
+            FileRole::Config,
+        ] {
             assert_eq!(FileRole::parse(role.as_str()), Some(role));
         }
     }

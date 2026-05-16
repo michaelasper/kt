@@ -287,6 +287,7 @@ pub struct SearchResult {
     pub start_line: Option<usize>,
     pub end_line: Option<usize>,
     pub file_role: FileRole,
+    pub calls: Vec<CallRef>,
 }
 
 #[cfg(test)]

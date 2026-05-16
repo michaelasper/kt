@@ -1,10 +1,10 @@
-use crate::{FileRole, Language, SearchResult};
+use crate::{CallRef, FileRole, Language, SearchResult};
 use redis::{cmd, Cmd, Pipeline};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, warn};
 
-const SEARCH_RETURN_FIELDS: [&str; 12] = [
+const SEARCH_RETURN_FIELDS: [&str; 13] = [
     "chunk_id",
     "codebase_id",
     "filepath",
@@ -17,6 +17,7 @@ const SEARCH_RETURN_FIELDS: [&str; 12] = [
     "start_line",
     "end_line",
     "file_role",
+    "calls",
 ];
 const READ_FILE_PAGE_SIZE: usize = 1000;
 const RRF_CONSTANT: f64 = 60.0;
@@ -86,6 +87,7 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
         let mut score = 0.0f64;
         let mut start_line: Option<usize> = None;
         let mut end_line: Option<usize> = None;
+        let mut calls = String::new();
 
         if let redis::Value::Array(field_pairs) = fields {
             let mut j = 0;
@@ -158,7 +160,13 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
                         }
                         "file_role" => {
                             if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
-                                file_role = crate::FileRole::parse(&val).unwrap_or(crate::FileRole::Implementation);
+                                file_role = crate::FileRole::parse(&val)
+                                    .unwrap_or(crate::FileRole::Implementation);
+                            }
+                        }
+                        "calls" => {
+                            if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
+                                calls = val;
                             }
                         }
                         _ => {}
@@ -174,6 +182,32 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
                     "FT.SEARCH result for document {doc_key} ({filepath}) is missing required language field"
                 )
             })?;
+            let parsed_calls = if calls.is_empty() {
+                Vec::new()
+            } else {
+                calls
+                    .split_whitespace()
+                    .filter_map(|s| {
+                        if let Some(pos) = s.find("::") {
+                            let receiver = s[..pos].to_string();
+                            let name = s[pos + 2..].to_string();
+                            if !name.is_empty() {
+                                Some(CallRef {
+                                    name,
+                                    receiver: Some(receiver),
+                                })
+                            } else {
+                                None
+                            }
+                        } else {
+                            Some(CallRef {
+                                name: s.to_string(),
+                                receiver: None,
+                            })
+                        }
+                    })
+                    .collect()
+            };
             results.push(SearchResult {
                 chunk_id,
                 codebase_id,
@@ -190,6 +224,7 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
                 start_line,
                 end_line,
                 file_role,
+                calls: parsed_calls,
             });
         }
 
@@ -430,6 +465,7 @@ fn build_name_query(name: &str, codebase_id: Option<&str>) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn hybrid_search_impl(
     conn: &mut redis::aio::MultiplexedConnection,
     index_name: &str,
@@ -837,6 +873,7 @@ mod tests {
             start_line: None,
             end_line: None,
             file_role: crate::FileRole::Implementation,
+            calls: Vec::new(),
         }
     }
 
@@ -1051,8 +1088,14 @@ mod tests {
     }
     #[test]
     fn build_lexical_query_supports_or_mode() {
-        let query =
-            build_lexical_query("auth user", Some(&Language::Rust), None, None, LexicalMode::Or).unwrap();
+        let query = build_lexical_query(
+            "auth user",
+            Some(&Language::Rust),
+            None,
+            None,
+            LexicalMode::Or,
+        )
+        .unwrap();
 
         assert_eq!(query, "(@language:{rust} (auth | user))");
     }
@@ -1103,11 +1146,7 @@ mod tests {
         // test is in semantic lane (first_seen=0), impl is in lexical lane (first_seen=1)
         // Without boost, test wins on first_seen tiebreaker.
         // With boost, impl wins (rrf: impl = 1/61*2.0 vs test = 1/61*1.0)
-        let merged = fuse_search_lanes(
-            vec![test_result],
-            vec![impl_result],
-            2,
-        );
+        let merged = fuse_search_lanes(vec![test_result], vec![impl_result], 2);
 
         assert_eq!(merged[0].chunk_id, "impl_fn");
         assert_eq!(merged[1].chunk_id, "test_fn");
