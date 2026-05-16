@@ -8,9 +8,15 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{Mutex, RwLock};
+
+const CONTENT_MODIFIED_RETRY_ATTEMPTS: usize = 3;
+const CONTENT_MODIFIED_RETRY_DELAY: Duration = Duration::from_millis(150);
+const LOCATION_RETRY_ATTEMPTS: usize = 20;
+const LOCATION_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -253,13 +259,13 @@ impl RustAnalyzerSession {
     {
         let mut last_error = None;
 
-        for _ in 0..3 {
+        for _ in 0..CONTENT_MODIFIED_RETRY_ATTEMPTS {
             self.open_or_update_document(filepath).await?;
             match self.request(method, build_params()?).await {
                 Ok(value) => return Ok(value),
                 Err(error) if is_content_modified_error(&error) => {
                     last_error = Some(error);
-                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    tokio::time::sleep(CONTENT_MODIFIED_RETRY_DELAY).await;
                 }
                 Err(error) => return Err(error),
             }
@@ -279,7 +285,7 @@ impl RustAnalyzerSession {
     {
         let mut last = Value::Null;
 
-        for attempt in 0..20 {
+        for attempt in 0..LOCATION_RETRY_ATTEMPTS {
             let value = self
                 .request_document_with_retry(filepath, method, &build_params)
                 .await?;
@@ -288,8 +294,8 @@ impl RustAnalyzerSession {
             }
             last = value;
 
-            if attempt + 1 < 20 {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if attempt + 1 < LOCATION_RETRY_ATTEMPTS {
+                tokio::time::sleep(LOCATION_RETRY_DELAY).await;
             }
         }
 
@@ -554,8 +560,16 @@ pub fn file_uri_to_path(uri: &str) -> Result<PathBuf> {
     let rest = uri
         .strip_prefix("file://")
         .ok_or_else(|| anyhow!("not a file URI: {uri}"))?;
-    let path = rest.strip_prefix("localhost").unwrap_or(rest);
-    Ok(PathBuf::from(percent_decode(path)?))
+    let path = if rest.starts_with('/') {
+        rest.to_string()
+    } else if rest == "localhost" {
+        "/".to_string()
+    } else if let Some(path) = rest.strip_prefix("localhost/") {
+        format!("/{path}")
+    } else {
+        return Err(anyhow!("unsupported file URI authority in {uri}"));
+    };
+    Ok(PathBuf::from(percent_decode(&path)?))
 }
 
 pub fn encode_json_rpc_message(message: &Value) -> Result<Vec<u8>> {
@@ -576,7 +590,9 @@ pub fn decode_json_rpc_message(frame: &[u8]) -> Result<Value> {
         .find_map(parse_content_length)
         .ok_or_else(|| anyhow!("missing Content-Length header"))?;
     let payload_start = split + 4;
-    let payload_end = payload_start + content_length;
+    let payload_end = payload_start
+        .checked_add(content_length)
+        .ok_or_else(|| anyhow!("Content-Length exceeds addressable frame size"))?;
     if frame.len() < payload_end {
         return Err(anyhow!("incomplete JSON-RPC payload"));
     }
@@ -683,6 +699,23 @@ mod tests {
 
         assert_eq!(uri, "file:///tmp/kt%20debug/src/lib.rs");
         assert_eq!(decoded, path);
+    }
+
+    #[test]
+    fn file_uri_to_path_rejects_remote_authority() {
+        let error = file_uri_to_path("file://localhost.evil/tmp/src.rs").unwrap_err();
+
+        assert!(error.to_string().contains("unsupported file URI authority"));
+    }
+
+    #[test]
+    fn decode_json_rpc_message_rejects_overflowing_content_length() {
+        let frame = format!("Content-Length: {}\r\n\r\n", usize::MAX);
+
+        let result = std::panic::catch_unwind(|| decode_json_rpc_message(frame.as_bytes()));
+
+        assert!(result.is_ok(), "decoder should return an error, not panic");
+        assert!(result.unwrap().is_err());
     }
 
     #[test]
