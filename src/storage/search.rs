@@ -1,10 +1,10 @@
-use crate::{Language, SearchResult};
+use crate::{FileRole, Language, SearchResult};
 use redis::{cmd, Cmd, Pipeline};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, warn};
 
-const SEARCH_RETURN_FIELDS: [&str; 13] = [
+const SEARCH_RETURN_FIELDS: [&str; 12] = [
     "chunk_id",
     "codebase_id",
     "filepath",
@@ -17,7 +17,6 @@ const SEARCH_RETURN_FIELDS: [&str; 13] = [
     "start_line",
     "end_line",
     "file_role",
-    "calls",
 ];
 const READ_FILE_PAGE_SIZE: usize = 1000;
 const RRF_CONSTANT: f64 = 60.0;
@@ -84,7 +83,6 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
         let mut content = String::new();
         let mut parent_context: Option<String> = None;
         let mut file_role = crate::FileRole::Implementation;
-        let mut calls = String::new();
         let mut score = 0.0f64;
         let mut start_line: Option<usize> = None;
         let mut end_line: Option<usize> = None;
@@ -161,11 +159,6 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
                         "file_role" => {
                             if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
                                 file_role = crate::FileRole::parse(&val).unwrap_or(crate::FileRole::Implementation);
-                            }
-                        }
-                        "calls" => {
-                            if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
-                                calls = val;
                             }
                         }
                         _ => {}
@@ -340,13 +333,20 @@ fn escape_tag_value(value: &str) -> String {
     escaped
 }
 
-fn build_scope_filters(language: Option<&Language>, codebase_id: Option<&str>) -> Vec<String> {
+fn build_scope_filters(
+    language: Option<&Language>,
+    codebase_id: Option<&str>,
+    file_role: Option<&FileRole>,
+) -> Vec<String> {
     let mut filters = Vec::new();
     if let Some(id) = codebase_id {
         filters.push(build_codebase_filter(id));
     }
     if let Some(lang) = language {
         filters.push(tag_filter("language", lang.as_str()));
+    }
+    if let Some(role) = file_role {
+        filters.push(tag_filter("file_role", role.as_str()));
     }
     filters
 }
@@ -373,10 +373,11 @@ pub(crate) fn build_semantic_query(
     query_text: &str,
     language: Option<&Language>,
     codebase_id: Option<&str>,
+    file_role: Option<&FileRole>,
     candidate_limit: usize,
 ) -> String {
     let _ = query_text;
-    let filters = build_scope_filters(language, codebase_id);
+    let filters = build_scope_filters(language, codebase_id, file_role);
     let base = combine_filters_and_text(&filters, None);
     format!("{base}=>[KNN {candidate_limit} @embedding $query_vec AS vector_score]")
 }
@@ -391,6 +392,7 @@ pub(crate) fn build_lexical_query(
     query_text: &str,
     language: Option<&Language>,
     codebase_id: Option<&str>,
+    file_role: Option<&FileRole>,
     mode: LexicalMode,
 ) -> Option<String> {
     let effective_query = query_text.trim();
@@ -398,7 +400,7 @@ pub(crate) fn build_lexical_query(
         return None;
     }
 
-    let filters = build_scope_filters(language, codebase_id);
+    let filters = build_scope_filters(language, codebase_id, file_role);
     let escaped = escape_fts_query(effective_query);
 
     let processed_query = if mode == LexicalMode::Or {
@@ -435,6 +437,7 @@ pub(super) async fn hybrid_search_impl(
     query_text: &str,
     language: Option<&Language>,
     codebase_id: Option<&str>,
+    file_role: Option<&FileRole>,
     top_k: usize,
 ) -> anyhow::Result<Vec<SearchResult>> {
     if top_k == 0 {
@@ -456,6 +459,7 @@ pub(super) async fn hybrid_search_impl(
             query_text,
             language,
             codebase_id,
+            file_role,
             limit,
             top_k,
             mode: LexicalMode::And,
@@ -477,6 +481,7 @@ pub(super) async fn hybrid_search_impl(
             query_text,
             language,
             codebase_id,
+            file_role,
             limit,
             top_k,
             mode: LexicalMode::Or,
@@ -492,7 +497,7 @@ pub(super) async fn hybrid_search_impl(
 
     // Stage 3: Pure Semantic
     debug!("Stage 2 (OR) returned 0 results, falling back to Stage 3 (Pure Semantic)");
-    let semantic_query = build_semantic_query(query_text, language, codebase_id, limit);
+    let semantic_query = build_semantic_query(query_text, language, codebase_id, file_role, limit);
     let semantic_result: redis::Value = cmd("FT.SEARCH")
         .arg(index_name)
         .arg(&semantic_query)
@@ -525,6 +530,7 @@ struct HybridLaneParams<'a> {
     query_text: &'a str,
     language: Option<&'a Language>,
     codebase_id: Option<&'a str>,
+    file_role: Option<&'a FileRole>,
     limit: usize,
     top_k: usize,
     mode: LexicalMode,
@@ -538,6 +544,7 @@ async fn execute_hybrid_lane(
         params.query_text,
         params.language,
         params.codebase_id,
+        params.file_role,
         params.limit,
     );
 
@@ -563,6 +570,7 @@ async fn execute_hybrid_lane(
         params.query_text,
         params.language,
         params.codebase_id,
+        params.file_role,
         params.mode,
     );
     if let Some(lq) = &lexical_query {
@@ -598,6 +606,16 @@ struct FusedSearchResult {
     first_seen: usize,
 }
 
+fn file_role_boost(role: &FileRole) -> f64 {
+    match role {
+        FileRole::Implementation => 2.0,
+        FileRole::Config => 2.0,
+        FileRole::Fixture => 1.4,
+        FileRole::Generated => 1.2,
+        FileRole::Test => 1.0,
+    }
+}
+
 pub(crate) fn fuse_search_lanes(
     semantic_results: Vec<SearchResult>,
     lexical_results: Vec<SearchResult>,
@@ -614,6 +632,12 @@ pub(crate) fn fuse_search_lanes(
     add_rrf_lane(&mut fused, &mut first_seen_counter, lexical_results);
 
     let mut results: Vec<FusedSearchResult> = fused.into_values().collect();
+
+    for result in &mut results {
+        let boost = file_role_boost(&result.result.file_role);
+        result.rrf_score *= boost;
+    }
+
     results.sort_by(|a, b| {
         b.rrf_score
             .partial_cmp(&a.rrf_score)
@@ -792,7 +816,7 @@ mod tests {
         fuse_search_lanes, parse_search_results, LexicalMode,
     };
     use crate::storage::index::is_index_not_found_error;
-    use crate::{Language, SearchResult};
+    use crate::{FileRole, Language, SearchResult};
     use redis::RedisError;
     use redis::Value;
 
@@ -971,7 +995,7 @@ mod tests {
 
     #[test]
     fn build_semantic_query_uses_wildcard_when_unscoped() {
-        let query = build_semantic_query("how does auth work", None, None, 25);
+        let query = build_semantic_query("how does auth work", None, None, None, 25);
 
         assert!(!query.contains("@codebase_id"));
         assert!(!query.contains("auth"));
@@ -984,6 +1008,7 @@ mod tests {
             "how does auth work",
             Some(&Language::Rust),
             Some("repo:one"),
+            None,
             25,
         );
 
@@ -1002,6 +1027,7 @@ mod tests {
             "auth: user-role? (admin)",
             Some(&Language::Rust),
             Some("repo:one"),
+            None,
             LexicalMode::And,
         )
         .unwrap();
@@ -1018,6 +1044,7 @@ mod tests {
             " \t\n",
             Some(&Language::Rust),
             Some("repo"),
+            None,
             LexicalMode::And
         )
         .is_none());
@@ -1025,7 +1052,7 @@ mod tests {
     #[test]
     fn build_lexical_query_supports_or_mode() {
         let query =
-            build_lexical_query("auth user", Some(&Language::Rust), None, LexicalMode::Or).unwrap();
+            build_lexical_query("auth user", Some(&Language::Rust), None, None, LexicalMode::Or).unwrap();
 
         assert_eq!(query, "(@language:{rust} (auth | user))");
     }
@@ -1063,6 +1090,27 @@ mod tests {
         let merged = fuse_search_lanes(vec![sample_result("a")], vec![sample_result("b")], 0);
 
         assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn fuse_search_lanes_boosts_implementation_over_test() {
+        let impl_result = sample_result("impl_fn");
+        let test_result = SearchResult {
+            file_role: FileRole::Test,
+            ..sample_result("test_fn")
+        };
+
+        // test is in semantic lane (first_seen=0), impl is in lexical lane (first_seen=1)
+        // Without boost, test wins on first_seen tiebreaker.
+        // With boost, impl wins (rrf: impl = 1/61*2.0 vs test = 1/61*1.0)
+        let merged = fuse_search_lanes(
+            vec![test_result],
+            vec![impl_result],
+            2,
+        );
+
+        assert_eq!(merged[0].chunk_id, "impl_fn");
+        assert_eq!(merged[1].chunk_id, "test_fn");
     }
 
     #[test]
