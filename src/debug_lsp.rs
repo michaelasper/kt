@@ -100,7 +100,7 @@ impl DebugLspManager {
     ) -> Result<Value> {
         let session = self.session_for(root).await?;
         session
-            .request_document_with_retry(filepath, "textDocument/definition", || {
+            .request_document_locations_with_retry(filepath, "textDocument/definition", || {
                 Ok(json!({
                     "textDocument": {"uri": path_to_file_uri(filepath)?},
                     "position": {"line": line, "character": character}
@@ -119,7 +119,7 @@ impl DebugLspManager {
     ) -> Result<Value> {
         let session = self.session_for(root).await?;
         session
-            .request_document_with_retry(filepath, "textDocument/references", || {
+            .request_document_locations_with_retry(filepath, "textDocument/references", || {
                 Ok(json!({
                     "textDocument": {"uri": path_to_file_uri(filepath)?},
                     "position": {"line": line, "character": character},
@@ -268,6 +268,34 @@ impl RustAnalyzerSession {
         Err(last_error.unwrap_or_else(|| anyhow!("LSP request {method} failed")))
     }
 
+    async fn request_document_locations_with_retry<F>(
+        &self,
+        filepath: &Path,
+        method: &str,
+        build_params: F,
+    ) -> Result<Value>
+    where
+        F: Fn() -> Result<Value>,
+    {
+        let mut last = Value::Null;
+
+        for attempt in 0..20 {
+            let value = self
+                .request_document_with_retry(filepath, method, &build_params)
+                .await?;
+            if contains_lsp_location(&value) {
+                return Ok(value);
+            }
+            last = value;
+
+            if attempt + 1 < 20 {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
+
+        Ok(last)
+    }
+
     async fn open_or_update_document(&self, filepath: &Path) -> Result<()> {
         let _guard = self.request_lock.lock().await;
         let uri = path_to_file_uri(filepath)?;
@@ -404,6 +432,18 @@ fn hash_text(text: &str) -> u64 {
 fn is_content_modified_error(error: &anyhow::Error) -> bool {
     let message = error.to_string();
     message.contains("\"code\":-32801") || message.contains("content modified")
+}
+
+fn contains_lsp_location(value: &Value) -> bool {
+    match value {
+        Value::Array(values) => values.iter().any(contains_lsp_location),
+        Value::Object(object) => {
+            (object.get("uri").is_some() && object.get("range").is_some())
+                || (object.get("targetUri").is_some() && object.get("targetRange").is_some())
+                || object.values().any(contains_lsp_location)
+        }
+        _ => false,
+    }
 }
 
 fn is_server_request(message: &Value, active_request_id: u64) -> bool {

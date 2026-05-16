@@ -15,13 +15,9 @@ async fn rust_analyzer_definition_and_references_point_to_existing_files() -> an
     let (line, character) = find_position(&source, "mcp_error(\"directory_path")?;
     let manager = DebugLspManager::new();
 
-    let definition = wait_for_locations(|| {
-        let manager = &manager;
-        let root = &root;
-        let filepath = &filepath;
-        async move { manager.definition(root, filepath, line, character).await }
-    })
-    .await?;
+    let definition = manager
+        .definition(&root, &filepath, line, character)
+        .await?;
     assert!(
         collect_existing_paths(&definition)
             .iter()
@@ -29,17 +25,9 @@ async fn rust_analyzer_definition_and_references_point_to_existing_files() -> an
         "definition returned no existing file locations: {definition}"
     );
 
-    let references = wait_for_locations(|| {
-        let manager = &manager;
-        let root = &root;
-        let filepath = &filepath;
-        async move {
-            manager
-                .references(root, filepath, line, character, true)
-                .await
-        }
-    })
-    .await?;
+    let references = manager
+        .references(&root, &filepath, line, character, true)
+        .await?;
     assert!(
         collect_existing_paths(&references)
             .iter()
@@ -57,25 +45,6 @@ fn rust_analyzer_available() -> bool {
         .arg("--version")
         .output()
         .is_ok_and(|output| output.status.success())
-}
-
-async fn wait_for_locations<F, Fut>(mut request: F) -> anyhow::Result<Value>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = anyhow::Result<Value>>,
-{
-    let mut last = Value::Null;
-
-    for _ in 0..20 {
-        let value = request().await?;
-        if !collect_existing_paths(&value).is_empty() {
-            return Ok(value);
-        }
-        last = value;
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-
-    Ok(last)
 }
 
 fn find_position(source: &str, needle: &str) -> anyhow::Result<(usize, usize)> {

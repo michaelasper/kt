@@ -165,6 +165,8 @@ pub struct DebugLspReferencesParams {
 pub struct DebugLspDocumentSymbolsParams {
     #[schemars(description = "Repository-relative or absolute file path")]
     pub filepath: String,
+    #[schemars(description = "Maximum symbol nodes to return; default 80, set 0 for unlimited")]
+    pub max_symbols: Option<usize>,
     #[schemars(description = "Optional directory path to select a codebase root")]
     pub directory_path: Option<String>,
     #[schemars(description = "Optional codebase alias to select a codebase root")]
@@ -1049,7 +1051,12 @@ impl DebugKtServer {
             .document_symbols(&root, &filepath)
             .await
             .map_err(mcp_error)?;
-        let xml = format_lsp_symbols(&root, &params.filepath, &result);
+        let xml = format_lsp_symbols(
+            &root,
+            &params.filepath,
+            &result,
+            debug_symbol_limit(params.max_symbols),
+        );
         Ok(CallToolResult::success(vec![Content::text(xml)]))
     }
 
@@ -1285,28 +1292,88 @@ fn append_lsp_location_xml(xml: &mut String, root: &Path, uri: &str, range: &ser
     ));
 }
 
-fn format_lsp_symbols(root: &Path, filepath: &str, result: &serde_json::Value) -> String {
+fn format_lsp_symbols(
+    root: &Path,
+    filepath: &str,
+    result: &serde_json::Value,
+    max_symbols: Option<usize>,
+) -> String {
     let mut xml = format!(
         "<debug_lsp_document_symbols root_path=\"{}\" filepath=\"{}\">\n",
         xml_escape(&root.display().to_string()),
         xml_escape(filepath)
     );
 
+    let symbols_total = count_lsp_symbols(result);
+    let mut symbols_remaining = max_symbols.unwrap_or(usize::MAX);
+    let mut symbols_returned = 0usize;
+
     if let serde_json::Value::Array(symbols) = result {
         for symbol in symbols {
-            append_lsp_symbol_xml(&mut xml, symbol, 1);
+            append_lsp_symbol_xml(
+                &mut xml,
+                symbol,
+                1,
+                &mut symbols_remaining,
+                &mut symbols_returned,
+            );
+            if symbols_remaining == 0 {
+                break;
+            }
         }
     }
 
-    xml.push_str(&format!(
-        "  <raw_json>{}</raw_json>\n",
-        xml_escape(&serde_json::to_string(result).unwrap_or_else(|_| "null".to_string()))
-    ));
+    if symbols_returned < symbols_total {
+        xml.push_str(&format!(
+            "  <truncated symbols_returned=\"{}\" symbols_total=\"{}\" />\n",
+            symbols_returned, symbols_total
+        ));
+        xml.push_str("  <raw_json omitted=\"true\" reason=\"symbol_output_truncated\" />\n");
+    } else {
+        xml.push_str(&format!(
+            "  <raw_json>{}</raw_json>\n",
+            xml_escape(&serde_json::to_string(result).unwrap_or_else(|_| "null".to_string()))
+        ));
+    }
     xml.push_str("</debug_lsp_document_symbols>");
     xml
 }
 
-fn append_lsp_symbol_xml(xml: &mut String, symbol: &serde_json::Value, depth: usize) {
+fn debug_symbol_limit(max_symbols: Option<usize>) -> Option<usize> {
+    match max_symbols {
+        Some(0) => None,
+        Some(value) => Some(value),
+        None => Some(80),
+    }
+}
+
+fn count_lsp_symbols(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Array(symbols) => symbols.iter().map(count_lsp_symbols).sum(),
+        serde_json::Value::Object(symbol) => {
+            1 + symbol
+                .get("children")
+                .map(count_lsp_symbols)
+                .unwrap_or_default()
+        }
+        _ => 0,
+    }
+}
+
+fn append_lsp_symbol_xml(
+    xml: &mut String,
+    symbol: &serde_json::Value,
+    depth: usize,
+    symbols_remaining: &mut usize,
+    symbols_returned: &mut usize,
+) {
+    if *symbols_remaining == 0 {
+        return;
+    }
+
+    *symbols_remaining -= 1;
+    *symbols_returned += 1;
+
     let indent = "  ".repeat(depth);
     let name = symbol
         .get("name")
@@ -1339,7 +1406,7 @@ fn append_lsp_symbol_xml(xml: &mut String, symbol: &serde_json::Value, depth: us
 
     if let Some(children) = symbol.get("children").and_then(serde_json::Value::as_array) {
         for child in children {
-            append_lsp_symbol_xml(xml, child, depth + 1);
+            append_lsp_symbol_xml(xml, child, depth + 1, symbols_remaining, symbols_returned);
         }
     }
 
@@ -2080,6 +2147,39 @@ mod tests {
         assert!(xml.contains(
             "<warning source=\"shadow_index\">Shadow file read failed: redis &lt;down&gt; &amp; retry</warning>"
         ));
+    }
+
+    #[test]
+    fn test_format_lsp_symbols_truncates_large_outputs() {
+        let symbols = serde_json::Value::Array(vec![
+            serde_json::json!({
+                "name": "first",
+                "kind": 12,
+                "range": {
+                    "start": {"line": 1, "character": 2},
+                    "end": {"line": 3, "character": 4}
+                }
+            }),
+            serde_json::json!({
+                "name": "second",
+                "kind": 12,
+                "range": {
+                    "start": {"line": 5, "character": 6},
+                    "end": {"line": 7, "character": 8}
+                }
+            }),
+        ]);
+
+        let xml = format_lsp_symbols(
+            std::path::Path::new("/repo"),
+            "src/lib.rs",
+            &symbols,
+            Some(1),
+        );
+
+        assert!(xml.contains("name=\"first\""));
+        assert!(!xml.contains("name=\"second\""));
+        assert!(xml.contains("<truncated symbols_returned=\"1\" symbols_total=\"2\" />"));
     }
 
     #[test]
