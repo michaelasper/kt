@@ -1,4 +1,4 @@
-use crate::{Chunk, Language};
+use crate::{Chunk, FileRole, Language};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 use tree_sitter::{Node, Parser, Tree};
@@ -12,10 +12,13 @@ pub async fn parse_file_async(
     relative_path: String,
     language: Language,
     codebase_id: String,
+    file_role: FileRole,
 ) -> crate::error::Result<Vec<Chunk>> {
-    tokio::task::spawn_blocking(move || parse_file(&path, &relative_path, language, &codebase_id))
-        .await
-        .map_err(crate::error::KtError::from)?
+    tokio::task::spawn_blocking(move || {
+        parse_file(&path, &relative_path, language, &codebase_id, file_role)
+    })
+    .await
+    .map_err(crate::error::KtError::from)?
 }
 
 pub fn parse_file(
@@ -23,6 +26,7 @@ pub fn parse_file(
     relative_path: &str,
     language: Language,
     codebase_id: &str,
+    file_role: FileRole,
 ) -> crate::error::Result<Vec<Chunk>> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -51,6 +55,7 @@ pub fn parse_file(
             language,
             &config,
             codebase_id,
+            file_role,
         )),
         None => {
             warn!(
@@ -62,6 +67,7 @@ pub fn parse_file(
                 relative_path,
                 language,
                 codebase_id,
+                file_role,
             ))
         }
     }
@@ -74,6 +80,7 @@ fn extract_chunks(
     language: Language,
     config: &LanguageConfig,
     codebase_id: &str,
+    file_role: FileRole,
 ) -> Vec<Chunk> {
     let root = tree.root_node();
     let mut chunks = Vec::new();
@@ -84,6 +91,7 @@ fn extract_chunks(
         language,
         config,
         codebase_id,
+        file_role,
     };
 
     collect_chunks(&mut cursor, &ctx, &mut chunks, None);
@@ -97,6 +105,7 @@ struct ExtractionContext<'a> {
     language: Language,
     config: &'a LanguageConfig,
     codebase_id: &'a str,
+    file_role: FileRole,
 }
 
 fn collect_chunks<'a>(
@@ -183,6 +192,8 @@ fn build_chunk(
         parent_context: parent_ctx_str,
         start_line,
         end_line,
+        file_role: ctx.file_role,
+        calls: Vec::new(),
     })
 }
 
@@ -554,6 +565,7 @@ fn fallback_line_chunks(
     relative_path: &str,
     language: Language,
     codebase_id: &str,
+    file_role: FileRole,
 ) -> Vec<Chunk> {
     let lines: Vec<&str> = source.lines().collect();
     let chunk_size = 30;
@@ -578,6 +590,8 @@ fn fallback_line_chunks(
             parent_context: None,
             start_line,
             end_line,
+            file_role,
+            calls: Vec::new(),
         });
     }
 
@@ -601,6 +615,7 @@ mod tests {
             language,
             &config,
             "test-codebase",
+            FileRole::Implementation,
         )
     }
 
@@ -630,6 +645,7 @@ fn hello_world() -> String {
             Language::Rust,
             &config,
             "test-codebase",
+            FileRole::Implementation,
         );
         assert!(!chunks.is_empty());
         assert_eq!(chunks[0].node_type, "function");
@@ -846,6 +862,7 @@ impl Foo {
             Language::Rust,
             &config,
             "test-codebase",
+            FileRole::Implementation,
         );
         assert!(chunks.len() >= 2);
 
@@ -951,7 +968,7 @@ public record UserDto(String id) {
     #[test]
     fn test_fallback_line_chunks() {
         let source = "line1\nline2\nline3\nline4\n";
-        let chunks = fallback_line_chunks(source, "test.rs", Language::Rust, "test-codebase");
+        let chunks = fallback_line_chunks(source, "test.rs", Language::Rust, "test-codebase", FileRole::Implementation);
         assert!(!chunks.is_empty());
         assert_eq!(chunks[0].node_type, "text_block");
     }
@@ -967,6 +984,7 @@ public record UserDto(String id) {
             "test.rs".to_string(),
             Language::Rust,
             "test-codebase".to_string(),
+            FileRole::Implementation,
         )
         .await
         .unwrap();
@@ -985,6 +1003,7 @@ public record UserDto(String id) {
             "nonexistent.rs",
             Language::Rust,
             "test-codebase",
+            FileRole::Implementation,
         );
 
         assert!(result.is_err(), "Should return Err on file read error");

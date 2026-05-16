@@ -310,6 +310,7 @@ pub async fn execute(
                     file.relative_path.clone(),
                     file.language,
                     codebase_id.clone(),
+                    file.file_role,
                 )
                 .await
                 {

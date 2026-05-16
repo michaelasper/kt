@@ -11,7 +11,7 @@ pub(crate) const CODEBASE_PREFIX: &str = "kt:codebase:";
 pub(crate) const CODEBASE_ALIAS_PREFIX: &str = "kt:codebase_alias:";
 pub(crate) const SCHEMA_VERSION_KEY: &str = "kt:schema_version";
 pub(crate) const SCHEMA_MIGRATION_LOCK_KEY: &str = "kt:schema_migration_lock";
-pub(crate) const SCHEMA_VERSION: &str = "3";
+pub(crate) const SCHEMA_VERSION: &str = "4";
 
 pub(crate) fn is_index_not_found_error(err: &redis::RedisError) -> bool {
     let msg = err.to_string().to_lowercase();
@@ -63,6 +63,10 @@ fn build_schema_args(include_mtime: bool) -> Vec<&'static str> {
         "SORTABLE",
         "end_line",
         "NUMERIC",
+        "file_role",
+        "TAG",
+        "calls",
+        "TEXT",
         "parent_context",
         "TEXT",
         "embedding",

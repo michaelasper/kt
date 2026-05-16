@@ -1,3 +1,5 @@
+pub mod file_role;
+
 #[cfg(feature = "agentic-rag")]
 pub mod agent;
 pub mod codebase;
@@ -21,6 +23,7 @@ pub mod util;
 pub use codebase::Codebase;
 pub use config::Config;
 pub use error::KtError;
+pub use file_role::FileRole;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -180,6 +183,12 @@ impl std::fmt::Display for Language {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallRef {
+    pub name: String,
+    pub receiver: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chunk {
     pub chunk_id: String,
     pub codebase_id: String,
@@ -192,6 +201,8 @@ pub struct Chunk {
     pub parent_context: Option<String>,
     pub start_line: usize,
     pub end_line: usize,
+    pub file_role: FileRole,
+    pub calls: Vec<CallRef>,
 }
 
 impl Chunk {
@@ -275,6 +286,7 @@ pub struct SearchResult {
     pub score: f64,
     pub start_line: Option<usize>,
     pub end_line: Option<usize>,
+    pub file_role: FileRole,
 }
 
 #[cfg(test)]

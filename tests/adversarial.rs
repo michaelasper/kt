@@ -1,6 +1,6 @@
 use kt::config::Config;
 use kt::storage::Storage;
-use kt::{Chunk, Language};
+use kt::{Chunk, FileRole, Language};
 
 async fn make_storage() -> Storage {
     let config = Config::from_env();
@@ -283,6 +283,8 @@ fn test_chunk_in_codebase(
         parent_context: None,
         start_line,
         end_line,
+        file_role: FileRole::Implementation,
+        calls: Vec::new(),
     }
 }
 

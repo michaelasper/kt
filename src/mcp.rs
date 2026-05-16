@@ -557,11 +557,13 @@ impl KtServer {
             }
 
             let language = language.unwrap();
+            let file_role = crate::FileRole::detect(filepath, language);
             let chunks = match crate::indexing::parse_file_async(
                 file_path,
                 filepath.to_string(),
                 language,
                 codebase.codebase_id.clone(),
+                file_role,
             )
             .await
             {
@@ -1171,6 +1173,7 @@ mod tests {
             score,
             start_line: None,
             end_line: None,
+            file_role: crate::FileRole::Implementation,
         }
     }
 
@@ -1194,6 +1197,7 @@ mod tests {
             score: 0.0,
             start_line,
             end_line,
+            file_role: crate::FileRole::Implementation,
         }
     }
 

@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, warn};
 
-const SEARCH_RETURN_FIELDS: [&str; 11] = [
+const SEARCH_RETURN_FIELDS: [&str; 13] = [
     "chunk_id",
     "codebase_id",
     "filepath",
@@ -16,6 +16,8 @@ const SEARCH_RETURN_FIELDS: [&str; 11] = [
     "parent_context",
     "start_line",
     "end_line",
+    "file_role",
+    "calls",
 ];
 const READ_FILE_PAGE_SIZE: usize = 1000;
 const RRF_CONSTANT: f64 = 60.0;
@@ -81,6 +83,8 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
         let mut signature = String::new();
         let mut content = String::new();
         let mut parent_context: Option<String> = None;
+        let mut file_role = crate::FileRole::Implementation;
+        let mut calls = String::new();
         let mut score = 0.0f64;
         let mut start_line: Option<usize> = None;
         let mut end_line: Option<usize> = None;
@@ -154,6 +158,16 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
                         "end_line" => {
                             end_line = Some(parse_line_number("end_line", &field_pairs[j + 1])?);
                         }
+                        "file_role" => {
+                            if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
+                                file_role = crate::FileRole::parse(&val).unwrap_or(crate::FileRole::Implementation);
+                            }
+                        }
+                        "calls" => {
+                            if let Some(val) = parse_string_value(&field_pairs[j + 1]) {
+                                calls = val;
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -182,6 +196,7 @@ fn parse_search_page(value: redis::Value) -> anyhow::Result<SearchPage> {
                 score,
                 start_line,
                 end_line,
+                file_role,
             });
         }
 
@@ -797,6 +812,7 @@ mod tests {
             score: 0.0,
             start_line: None,
             end_line: None,
+            file_role: crate::FileRole::Implementation,
         }
     }
 

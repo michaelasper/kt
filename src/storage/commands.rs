@@ -27,6 +27,8 @@ macro_rules! append_hset_fields {
             .arg($chunk.start_line as i64)
             .arg("end_line")
             .arg($chunk.end_line as i64)
+            .arg("file_role")
+            .arg($chunk.file_role.as_str())
             .arg("embedding")
             .arg($embedding_bytes);
         if let Some(mt) = $mtime {
@@ -34,6 +36,18 @@ macro_rules! append_hset_fields {
         }
         if let Some(ref parent_ctx) = $chunk.parent_context {
             $cmd.arg("parent_context").arg(parent_ctx);
+        }
+        let calls_str: String = $chunk
+            .calls
+            .iter()
+            .map(|c| match &c.receiver {
+                Some(r) => format!("{}::{}", r, c.name),
+                None => c.name.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !calls_str.is_empty() {
+            $cmd.arg("calls").arg(&calls_str);
         }
     }};
 }

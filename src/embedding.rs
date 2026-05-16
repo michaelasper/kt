@@ -372,7 +372,7 @@ fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Chunk, Language};
+    use crate::{Chunk, FileRole, Language};
 
     fn sample_chunk(parent_context: Option<String>) -> Chunk {
         Chunk {
@@ -387,6 +387,8 @@ mod tests {
             parent_context,
             start_line: 10,
             end_line: 12,
+            file_role: FileRole::Implementation,
+            calls: Vec::new(),
         }
     }
 

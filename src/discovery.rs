@@ -64,6 +64,7 @@ pub struct DiscoveredFile {
     pub path: PathBuf,
     pub relative_path: String,
     pub language: Language,
+    pub file_role: crate::file_role::FileRole,
 }
 
 pub async fn discover_files_async(root: PathBuf) -> crate::error::Result<Vec<DiscoveredFile>> {
@@ -126,10 +127,13 @@ pub fn discover_files_with_options(
             let language = Language::from_extension(ext)?;
             let relative_path = relative_path.to_string_lossy().to_string();
 
+            let file_role = crate::file_role::FileRole::detect(&relative_path, language);
+
             Some(DiscoveredFile {
                 path,
                 relative_path,
                 language,
+                file_role,
             })
         })
         .collect())
