@@ -1265,6 +1265,10 @@ fn append_lsp_locations_xml(xml: &mut String, root: &Path, value: &serde_json::V
             let range = object.get("range").or_else(|| object.get("targetRange"));
             if let (Some(uri), Some(range)) = (uri, range) {
                 append_lsp_location_xml(xml, root, uri, range);
+            } else {
+                for value in object.values() {
+                    append_lsp_locations_xml(xml, root, value);
+                }
             }
         }
         _ => {}
@@ -1340,10 +1344,12 @@ fn format_lsp_symbols(
 }
 
 fn debug_symbol_limit(max_symbols: Option<usize>) -> Option<usize> {
+    const DEFAULT_DEBUG_SYMBOL_LIMIT: usize = 80;
+
     match max_symbols {
         Some(0) => None,
         Some(value) => Some(value),
-        None => Some(80),
+        None => Some(DEFAULT_DEBUG_SYMBOL_LIMIT),
     }
 }
 
@@ -1407,6 +1413,9 @@ fn append_lsp_symbol_xml(
     if let Some(children) = symbol.get("children").and_then(serde_json::Value::as_array) {
         for child in children {
             append_lsp_symbol_xml(xml, child, depth + 1, symbols_remaining, symbols_returned);
+            if *symbols_remaining == 0 {
+                break;
+            }
         }
     }
 
@@ -1717,7 +1726,9 @@ async fn resolve_call_context(
     storage: &Storage,
     codebase_id: Option<&str>,
 ) -> Vec<SearchResult> {
-    let max_related = 2;
+    const MAX_CALL_CONTEXT_NAMES: usize = 5;
+    const MAX_RELATED_CALL_CONTEXT: usize = 2;
+
     let result_names: HashSet<String> = results.iter().map(|r| r.name.clone()).collect();
 
     let mut call_names: Vec<String> = Vec::new();
@@ -1729,8 +1740,8 @@ async fn resolve_call_context(
         }
     }
 
-    if call_names.len() > 5 {
-        call_names.truncate(5);
+    if call_names.len() > MAX_CALL_CONTEXT_NAMES {
+        call_names.truncate(MAX_CALL_CONTEXT_NAMES);
     }
 
     if call_names.is_empty() {
@@ -1744,7 +1755,7 @@ async fn resolve_call_context(
         Ok(related) => related
             .into_iter()
             .filter(|r| !result_names.contains(&r.name))
-            .take(max_related)
+            .take(MAX_RELATED_CALL_CONTEXT)
             .collect(),
         Err(e) => {
             tracing::warn!("Failed to resolve call context for {:?}: {e}", call_names);
@@ -2180,6 +2191,31 @@ mod tests {
         assert!(xml.contains("name=\"first\""));
         assert!(!xml.contains("name=\"second\""));
         assert!(xml.contains("<truncated symbols_returned=\"1\" symbols_total=\"2\" />"));
+    }
+
+    #[test]
+    fn test_format_lsp_locations_recurses_nested_results() {
+        let result = serde_json::json!({
+            "items": [{
+                "uri": "file:///repo/src/lib.rs",
+                "range": {
+                    "start": {"line": 2, "character": 4},
+                    "end": {"line": 2, "character": 9}
+                }
+            }]
+        });
+
+        let xml = format_lsp_locations(
+            "debug_lsp_definition",
+            std::path::Path::new("/repo"),
+            "src/main.rs",
+            1,
+            Some(2),
+            &result,
+        );
+
+        assert!(xml.contains("filepath=\"src/lib.rs\""));
+        assert!(xml.contains("start_line=\"2\" start_character=\"4\""));
     }
 
     #[test]
